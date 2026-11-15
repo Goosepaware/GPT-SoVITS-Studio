@@ -1,0 +1,263 @@
+export type ThemeMode = 'dark' | 'light' | 'mono-dark' | 'mono-light' | 'color-system' | 'mono-system'
+
+export type EngineName = 'tts' | 'asr'
+export type EngineState = 'stopped' | 'starting' | 'loading' | 'ready' | 'busy' | 'stopping' | 'error'
+
+export interface AppConfig {
+  engineRoot: string
+  outputDir: string
+  theme: ThemeMode
+  autoUnloadOnSwitch: boolean
+  idleUnloadMinutes: number
+  device: string
+  half: boolean
+}
+
+export type AsrModelId = 'sensevoice'
+
+export interface ModelOption {
+  id: string
+  path: string
+  label: string
+  size: number
+  kind: 'gpt' | 'sovits' | 'asr' | 'vad'
+  base?: boolean
+}
+
+export interface ModelCatalog {
+  tts: {
+    gpt: ModelOption[]
+    sovits: ModelOption[]
+  }
+  asr: {
+    sensevoice: ModelOption | null
+    vad: ModelOption | null
+  }
+}
+
+export interface EngineValidation {
+  root: string
+  valid: boolean
+  missing: string[]
+  runtime: string
+}
+
+export interface VramInfo {
+  allocatedMB: number
+  reservedMB: number
+  freeMB: number
+  totalMB: number
+}
+
+export interface EngineStatus {
+  engine: EngineName
+  state: EngineState
+  pid?: number
+  label?: string
+  models: Record<string, string>
+  vram?: VramInfo
+  startedAt?: number
+  message?: string
+}
+
+export interface GpuInfo {
+  name: string
+  memoryTotalMB: number
+  memoryUsedMB: number
+  utilization: number | null
+  updatedAt: number
+}
+
+export interface Bootstrap {
+  config: AppConfig
+  validation: EngineValidation
+  models: ModelCatalog
+  version: string
+  appRoot: string
+  dataRoot: string
+}
+
+export interface TtsLoadOptions {
+  gptPath: string
+  sovitsPath: string
+}
+
+export interface TtsSynthesizeOptions {
+  text: string
+  textLang: string
+  promptText: string
+  promptLang: string
+  refAudioPath: string
+  speed: number
+  splitMethod: string
+  topK: number
+  topP: number
+  temperature: number
+  repetitionPenalty: number
+  seed: number
+  batchSize: number
+  sampleSteps: number
+  fragmentInterval: number
+  parallelInfer: boolean
+  outputPath: string
+  voiceId?: string
+}
+
+export interface AsrTranscribeOptions {
+  files: string[]
+  language: string
+}
+
+export interface AsrFileResult {
+  path: string
+  name: string
+  text: string
+  language: string
+  ok: boolean
+  error?: string
+  durationMs: number
+}
+
+export interface ReferenceTransfer {
+  id: number
+  path: string
+  text: string
+  language: string
+  name: string
+}
+
+export interface TtsResult {
+  filePath: string
+  duration: number
+  sampleRate: number
+  segments: number
+  elapsed: number
+  seed?: number
+  historyId?: string
+}
+
+export interface HistoryEntry {
+  id: string
+  filePath: string
+  text: string
+  voiceName?: string
+  models?: string
+  duration: number
+  createdAt: number
+  seed?: number
+  params?: Record<string, unknown>
+}
+
+export interface Voice {
+  id: string
+  name: string
+  audioPath: string
+  packagePath: string
+  transcript: string
+  promptLang: string
+  duration: number
+  createdAt: number
+  originalName?: string
+}
+
+export interface VoiceImportResult {
+  voices: Voice[]
+  imported: number
+  skipped: number
+}
+
+export type WorkerEvent =
+  | { type: 'worker-ready'; engine: EngineName; pid: number }
+  | { type: 'status'; engine: EngineName; status: Partial<EngineStatus> }
+  | {
+      type: 'stage'
+      engine: EngineName
+      id?: string
+      stage: string
+      label: string
+      progress?: number
+      detail?: string
+    }
+  | {
+      type: 'progress'
+      engine: EngineName
+      id?: string
+      current: number
+      total: number
+      label?: string
+      detail?: string
+    }
+  | { type: 'result'; engine: EngineName; id?: string; data: unknown }
+  | { type: 'error'; engine: EngineName; id?: string; message: string; traceback?: string }
+  | { type: 'cancelled'; engine: EngineName; id?: string }
+  | { type: 'log'; engine: EngineName; line: string }
+  | { type: 'notice'; engine: EngineName; message: string; tone?: 'info' | 'success' | 'warning' | 'error' }
+
+export interface Notice {
+  id: string
+  message: string
+  tone: 'info' | 'success' | 'warning' | 'error'
+}
+
+export interface AppApi {
+  bootstrap: () => Promise<Bootstrap>
+  refreshBootstrap: () => Promise<Bootstrap>
+  updateConfig: (patch: Partial<AppConfig>) => Promise<Bootstrap>
+  getPathForFile: (file: File) => string
+  chooseDirectory: (title?: string) => Promise<string | null>
+  chooseAudioFiles: (multiple?: boolean) => Promise<string[]>
+  chooseAsrFolder: () => Promise<string[]>
+  prepareReference: (path: string) => Promise<{ path: string; duration: number; name: string }>
+  readAudio: (path: string) => Promise<{ data: Uint8Array; mime: string }>
+  openPath: (path: string) => Promise<void>
+  revealPath: (path: string) => Promise<void>
+  exportMp3: (sourcePath: string) => Promise<string | null>
+  saveAsrResults: (payload: {
+    items: AsrFileResult[]
+    format: 'list' | 'txt'
+    suggestedName: string
+  }) => Promise<string | null>
+  tts: {
+    load: (options: TtsLoadOptions) => Promise<EngineStatus>
+    unload: () => Promise<void>
+    synthesize: (options: TtsSynthesizeOptions) => Promise<TtsResult>
+    cancel: () => Promise<void>
+    status: () => Promise<EngineStatus>
+  }
+  asr: {
+    load: (model: AsrModelId) => Promise<EngineStatus>
+    unload: () => Promise<void>
+    transcribe: (options: AsrTranscribeOptions) => Promise<AsrFileResult[]>
+    cancel: () => Promise<void>
+    status: () => Promise<EngineStatus>
+  }
+  history: {
+    list: () => Promise<HistoryEntry[]>
+    remove: (id: string) => Promise<HistoryEntry[]>
+    removeMany: (ids: string[]) => Promise<HistoryEntry[]>
+    export: (ids: string[]) => Promise<string | null>
+    clear: () => Promise<void>
+  }
+  voices: {
+    list: () => Promise<Voice[]>
+    import: (payload: {
+      sourcePath: string
+      name: string
+      transcript: string
+      promptLang: string
+    }) => Promise<Voice[]>
+    update: (id: string, patch: Partial<Pick<Voice, 'name' | 'transcript' | 'promptLang'>>) => Promise<Voice[]>
+    remove: (id: string) => Promise<Voice[]>
+    openFolder: () => Promise<void>
+    importFiles: () => Promise<VoiceImportResult | null>
+    export: (id: string) => Promise<string | null>
+  }
+  window: {
+    minimize: () => void
+    toggleMaximize: () => void
+    close: () => void
+    onMaximized: (cb: (maximized: boolean) => void) => () => void
+  }
+  onEngineEvent: (cb: (event: WorkerEvent) => void) => () => void
+  onGpu: (cb: (gpu: GpuInfo | null) => void) => () => void
+}

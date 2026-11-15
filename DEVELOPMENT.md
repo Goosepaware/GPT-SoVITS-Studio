@@ -1,0 +1,185 @@
+# GPT-SoVITS-Studio (v5turbo)
+
+给 GPT-SoVITS 整合包做的便携桌面工作台。只保留两个核心工作流：
+
+- **语音合成**：5–10 秒参考声音 + 参考文本 → 任意台词，支持 v5turbo。
+- **语音转文字**：只保留 SenseVoice（中 / 英 / 日 / 韩 / 粤），更轻、更快。
+
+同时补上原 WebUI 缺少的东西：模型加载阶段、分段进度、当前加载了哪些模型、每个引擎的显存占用、一键卸载、切换引擎自动释放显存、退出/崩溃自动结束 worker。
+
+近期改进：
+
+- 下拉菜单改为应用内渲染，四套主题下文字都清晰。
+- 新增「黑白 Mono」主题：去色、直角矩形、1px 线条，无阴影 / 渐变 / 毛玻璃；默认黑白 + 跟随系统，彩色与黑白都支持深色、浅色和跟随系统。
+- 页面常驻不卸载，切换页面后文本、参数、音色选择都不会丢。
+- 最近生成改为单行列表：左侧文本，右侧直接显示波形和播放按钮，不再有底部播放栏。
+- 最近生成支持批量选择、批量删除和批量导出。
+- 输出文件按合成文本命名，只取前 15 个字符并加省略号；同一文本重复生成自动加“（1）”“（2）”。
+- 采样步数改为 4 / 8 / 16 / 32 四档滑块。
+- 随机种子为 -1 时也会记录实际种子，结果卡和最近生成都支持“复用种子”；种子输入旁有随机按钮，一键设回 -1。
+- 语音转文字结果支持“发送到生成参考”，直接带回音频和文本。
+- 音色保存为单个 `.v5t` 文件（参考音频 + 文本 + 参考语言 + 时长），所有音色放在同一目录，可直接分享、导入，并可一键打开音色库目录。
+- 移除 Fun-ASR，只保留 SenseVoice，模型卡也不再显示。
+- 高级参数带 v5turbo 官方默认值，并支持一键恢复默认。
+- 生成结果可“放弃”或“放弃并重试”。
+
+## 技术栈
+
+- Electron + React + TypeScript + Vite + framer-motion
+- 两个独立 Python worker（`tts_worker.py` / `asr_worker.py`），通过 stdin/stdout JSONL 通信
+- 直接调用整合包里的 `GPT_SoVITS.TTS_infer_pack.TTS`，不经过 Gradio、不开放本地端口
+- 复用整合包 `runtime\python.exe`，不额外安装 Python 环境
+
+## 目录
+
+```text
+desktop_ui_v5/
+  src/                 Electron main / preload / React renderer
+  python/              tts_worker.py, asr_worker.py, engine_common.py
+  scripts/             开发、打包、精简引擎脚本
+  resources/           图标
+  data/                开发时配置、输出、日志（运行时生成）
+  release/             便携版输出目录
+  out/                 electron-vite 构建产物
+```
+
+## 开发
+
+```powershell
+# 在仓库根目录执行
+npm install
+npm run dev
+```
+
+开发时默认自动寻找同级的 `GPT-SoVITS-v5-*` 整合包；也可以在「设置」里手动指定。
+
+常用命令：
+
+```powershell
+npm run typecheck
+npm run build
+node scripts/probe-worker.mjs tts     # 直接测试 TTS worker
+node scripts/probe-worker.mjs asr     # 直接测试 ASR worker
+```
+
+> 仓库不包含引擎、模型、个人数据以及本地端到端测试脚本；这些内容由本地环境生成。
+
+## 主题
+
+「设置 → 外观」提供两套风格，每套都支持深色 / 浅色 / 跟随系统：
+
+- **黑白 Mono**：默认主题。去色、直角矩形、1px 线条，无阴影 / 渐变 / 毛玻璃；跟随系统时深色为黑底白线，浅色为白底黑线。
+- **彩色**：原有的紫青渐变风格，深色为默认。
+
+初始主题为黑白 + 跟随系统；旧配置升级后也会切到该默认。主题点击后立即预览，保存设置后持久化。
+
+## 构建便携版
+
+完整构建（复制约 10.5GB 的精简引擎，原整合包不动）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1 -Force
+```
+
+只更新应用代码、保留 `engine` 和 `data`（推荐日常迭代）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-release.ps1
+```
+
+输出：
+
+```text
+release/GPT-SoVITS-Studio/
+  GPT-SoVITS-Studio.exe
+  resources/app/          Electron 应用
+  resources/python/       Python worker
+  engine/                 runtime + v5turbo 底模 + SenseVoice
+  data/                   config / outputs / voices / logs
+  README.txt
+```
+
+精简引擎脚本是 `scripts/prepare-engine.ps1`，只复制 v5turbo 需要的底模、代码和 ASR 模型，删除 UVR5、旧版底模、旧 ASR 模型等。
+
+## 构建安装器
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-installer.ps1
+```
+
+流程：构建应用 → 压缩 payload（排除 `data`，仅保留示例音色 `smart_falcon.v5t`）→ 编译黑白浅色安装器。
+
+输出：
+
+```text
+release/installer/
+  GPT-SoVITS-Studio-Setup.exe       安装器 UI
+  GPT-SoVITS-Studio-Portable.7z     压缩后的程序 + 模型
+  安装说明.txt
+  SHA256.txt
+```
+
+由于 Windows exe 受 PE 4GB 限制，安装包采用「安装器 + 压缩包」两文件形式，两个文件需要放在同一目录。安装器支持图形界面和静默安装（`/S /DIR=... /NOSHORTCUT`）。
+
+## 音色库与分享
+
+所有音色都是 `data/voices` 下的单个 `.v5t` 文件，文件名就是保存时的音色名：
+
+```text
+data/voices/
+  smart_falcon.v5t
+  旁白 · 温柔女声.v5t
+```
+
+每个 `.v5t` 内含：
+
+- 原始参考音频（保存时已标准化）
+- 音色名称
+- 参考文本
+- 参考语言
+- 音频时长
+
+播放时会把音频解到 `data/cache/voices` 作为缓存，缓存可随时删除，不影响 `.v5t` 文件。
+
+合成页「音色库」下方提供：
+
+- **打开音色库文件夹**：直接在资源管理器打开 `data/voices`。
+- **导入 .v5t**：选择一个或多个 `.v5t` 文件。
+- **导出 .v5t**：把当前音色另存为一份可分享的 `.v5t` 副本。
+
+旧版本按文件夹保存的音色，会在首次启动时自动迁移成 `.v5t`，原 `voices.json` 会备份为 `data/voices-legacy-*.json`。
+
+## 显存策略
+
+本机是 8GB RTX 5070 Laptop，实测：
+
+- TTS v5turbo：约 4.4GB 显存，加载约 14 秒，首次生成含加速编译。
+- SenseVoice：约 2.1GB 显存，加载约 2 秒，首次识别会预热。
+
+TTS + SenseVoice 在 8GB 显卡上也很紧。因此默认：
+
+- 切换引擎时自动卸载另一个。
+- 空闲 15 分钟自动释放（可在设置里改）。
+- 「卸载」= 结束 worker 进程，CUDA 上下文和显存由系统回收。
+- 退出应用 / 窗口崩溃：worker 通过 stdin EOF 和父进程 watchdog 自行结束。
+- 模型页可看到 torch 显存和全局显存；8GB 建议只常驻一个引擎。
+
+## 添加训练好的权重
+
+把文件放进：
+
+- `GPT_weights_v5turbo/*.ckpt`
+- `SoVITS_weights_v5turbo/*.pth`
+
+然后在「模型与显存」页点「刷新模型列表」，合成页即可选择。默认底模是：
+
+- GPT：`GPT_SoVITS/pretrained_models/s1v3.ckpt`
+- SoVITS：`GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5turbo.pth`
+
+## 已知限制
+
+- 便携版第一次启动可能被 Windows Defender 扫描新复制的 runtime，耗时 1–3 分钟；之后会快很多。
+- SenseVoice 结果可能不带标点，可在结果表直接编辑。
+- SenseVoice 首次识别会预热约 10–20 秒，之后通常不到 1 秒。
+- 未签名 exe 可能触发 SmartScreen；自用可放行，公开分发再考虑签名。
+- Electron 运行时约 250MB，相对 10.5GB 引擎可忽略。
