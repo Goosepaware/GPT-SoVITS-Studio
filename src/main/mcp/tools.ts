@@ -29,6 +29,26 @@ export interface ToolHost {
   transcribe: (files: string[], language: string) => Promise<AsrFileResult[]>
   cancelTts: () => void
   audioFilesInFolder: (dir: string) => string[]
+  /** Diarization + dubbing (see main/dub.ts). */
+  dub?: {
+    extractAudio: (src: string, start?: number, end?: number) => Promise<string>
+    diarize: (src: string, opts: { numSpeakers?: number; language?: string; transcribe?: boolean; threshold?: number }) => Promise<unknown>
+    voiceFromSpan: (src: string, start: number, end: number, name: string, transcript?: string, lang?: string) => Promise<Voice>
+    mix: (base: string, items: { audioPath: string; start: number; gain?: number }[], outputPath: string, bgm?: 'keep' | 'duck' | 'remove') => Promise<string>
+    fit: (
+      index: number,
+      target: number,
+      baseSpeed: number,
+      synth: (speed: number) => Promise<{ filePath: string; duration: number }>
+    ) => Promise<{ filePath: string; report: unknown }>
+  }
+  /** Segment re-generation (see main/segmentEdit.ts). */
+  segments?: {
+    list: (audioPath: string) => unknown
+    preview: (audioPath: string, indices: number[], overrides: Json, count: number) => Promise<unknown>
+    commit: (audioPath: string, editId: string, choices: { index: number; candidate: number }[], matchLoudness?: boolean) => unknown
+    revert: (audioPath: string, mode: 'original' | 'last') => unknown
+  }
   activity: (line: string) => void
 }
 
@@ -355,6 +375,8 @@ export class McpTools {
                   text: { type: 'string' },
                   voice: { type: 'string' },
                   textLang: { type: 'string' },
+                  start: { type: 'number', description: 'Dubbing window start (s). With end, the line is fitted into the window (speed 0.85-1.15, then atempo ±10%); see fitReport/overflow.' },
+                  end: { type: 'number' },
                   params: PARAMS_SCHEMA
                 }
               }
@@ -391,11 +413,20 @@ export class McpTools {
             const id = str(line.id) || String(i + 1).padStart(3, '0')
             if (job) job.progress = `${i}/${lines.length} · ${id}`
             try {
-              const r = await this.synthOne(
-                { ...defaults, ...line, params: { ...shared, ...((line.params as Json) || {}) } },
-                { outputDir, fileName: id, voice: str(a.voice), formats }
-              )
-              items.push({ id, text: line.text, ok: true, ...r })
+              const lp = { ...shared, ...((line.params as Json) || {}) }
+              const s0 = Number(line.start)
+              const s1 = Number(line.end)
+              if (h.dub && Number.isFinite(s0) && Number.isFinite(s1) && s1 > s0) {
+                let last: Json = {}
+                const fit = await h.dub.fit(i, s1 - s0, Number(lp.speed) || 1, async (speed) => {
+                  last = await this.synthOne({ ...defaults, ...line, params: { ...lp, speed } }, { outputDir, fileName: id, voice: str(a.voice), formats })
+                  return { filePath: String(last.filePath), duration: Number(last.duration) }
+                })
+                items.push({ id, text: line.text, ok: true, ...last, filePath: fit.filePath, start: s0, end: s1, fit: fit.report })
+              } else {
+                const r = await this.synthOne({ ...defaults, ...line, params: lp }, { outputDir, fileName: id, voice: str(a.voice), formats })
+                items.push({ id, text: line.text, ok: true, ...r })
+              }
             } catch (error) {
               items.push({ id, text: line.text, ok: false, error: error instanceof Error ? error.message : String(error) })
               if (a.stopOnError === true) break
@@ -403,7 +434,16 @@ export class McpTools {
             fs.writeFileSync(manifest, JSON.stringify({ outputDir, items }, null, 1), 'utf-8')
           }
           if (job) job.progress = `${items.length}/${lines.length}`
-          return { manifest, done: items.filter((x) => x.ok).length, failed: items.filter((x) => !x.ok).length, total: lines.length, items }
+          const fitReport = items.filter((x) => x.fit).map((x) => x.fit)
+          return {
+            manifest,
+            done: items.filter((x) => x.ok).length,
+            failed: items.filter((x) => !x.ok).length,
+            total: lines.length,
+            overflow: fitReport.filter((f) => (f as Json).method === 'overflow').map((f) => (f as Json).index),
+            ...(fitReport.length ? { fitReport } : {}),
+            items
+          }
         }
       },
       {
@@ -436,6 +476,150 @@ export class McpTools {
           const fmts = this.formats(a.formats)
           const dir = str(a.outputDir) ? this.checkPath(String(a.outputDir)) : undefined
           return { files: writeSubtitles(audio, fmts.length ? fmts : [h.config().subtitle.defaultFormat], h.config().subtitle, dir) }
+        }
+      },
+      {
+        name: 'extract_audio',
+        description: 'Extract audio from a video/audio file as 16 kHz mono WAV (optional start/end seconds).',
+        inputSchema: { type: 'object', required: ['videoPath'], properties: { videoPath: { type: 'string' }, start: { type: 'number' }, end: { type: 'number' } } },
+        run: async (a) => {
+          if (!h.dub) throw new Error('Dubbing unavailable')
+          const s = a.start === undefined ? undefined : Number(a.start)
+          const e = a.end === undefined ? undefined : Number(a.end)
+          return { audioPath: await h.dub.extractAudio(this.checkPath(String(a.videoPath || '')), s, e) }
+        }
+      },
+      {
+        name: 'diarize',
+        description:
+          'Speaker diarization (CAM++) + per-line transcription. Returns items [{start,end,speaker:"S1",text,lang,confidence}] and per-speaker reference candidates (3-10 s). Accepts video or audio. Limits: overlapping speech goes to one speaker; lines <1 s and similar voices may be mislabeled; pass numSpeakers when known.',
+        long: true,
+        inputSchema: {
+          type: 'object',
+          required: ['audioPath'],
+          properties: {
+            audioPath: { type: 'string' },
+            numSpeakers: { type: 'number' },
+            language: { type: 'string' },
+            transcribe: { type: 'boolean' },
+            threshold: { type: 'number', description: 'Cosine distance for auto speaker count (default 0.6; lower = more speakers)' }
+          }
+        },
+        run: async (a) => {
+          if (!h.dub) throw new Error('Dubbing unavailable')
+          return h.dub.diarize(this.checkPath(String(a.audioPath || '')), {
+            numSpeakers: Number(a.numSpeakers) || undefined,
+            language: str(a.language),
+            transcribe: a.transcribe !== false,
+            threshold: Number(a.threshold) || undefined
+          })
+        }
+      },
+      {
+        name: 'voice_from_span',
+        description: 'Create a voice from a time span of a video/audio (e.g. a diarize reference candidate). transcript = what is said in the span.',
+        inputSchema: {
+          type: 'object',
+          required: ['sourcePath', 'start', 'end', 'name'],
+          properties: { sourcePath: { type: 'string' }, start: { type: 'number' }, end: { type: 'number' }, name: { type: 'string' }, transcript: { type: 'string' }, lang: { type: 'string' } }
+        },
+        run: async (a) => {
+          if (!h.dub) throw new Error('Dubbing unavailable')
+          const v = await h.dub.voiceFromSpan(this.checkPath(String(a.sourcePath || '')), Number(a.start), Number(a.end), String(a.name || ''), str(a.transcript), str(a.lang))
+          return voiceView(v)
+        }
+      },
+      {
+        name: 'mix_dub',
+        description:
+          "Place dub clips at their start times over the original and mix. bgm: 'keep' (original + dub), 'duck' (original lowered under dub, default), 'remove' (dub only; true vocal removal needs a separation model, not included). Output .mp4/.mkv keeps the video stream; .wav = audio only.",
+        long: true,
+        inputSchema: {
+          type: 'object',
+          required: ['basePath', 'items', 'outputPath'],
+          properties: {
+            basePath: { type: 'string', description: 'Original video or audio' },
+            items: { type: 'array', items: { type: 'object', properties: { audioPath: { type: 'string' }, start: { type: 'number' }, gain: { type: 'number' } } } },
+            outputPath: { type: 'string' },
+            bgm: { type: 'string', enum: ['keep', 'duck', 'remove'] }
+          }
+        },
+        run: async (a) => {
+          if (!h.dub) throw new Error('Dubbing unavailable')
+          const items = (Array.isArray(a.items) ? (a.items as Json[]) : []).map((x) => ({
+            audioPath: this.checkPath(String(x.audioPath || '')),
+            start: Number(x.start) || 0,
+            gain: x.gain === undefined ? undefined : Number(x.gain)
+          }))
+          const bgm = a.bgm === 'keep' || a.bgm === 'remove' ? a.bgm : 'duck'
+          return { outputPath: await h.dub.mix(this.checkPath(String(a.basePath || '')), items, this.checkPath(String(a.outputPath || '')), bgm) }
+        }
+      },
+      {
+        name: 'list_segments',
+        description: 'Sentence timeline of a generated audio (text, start/end, seed, flags, edited). Use to find bad sentences to re-generate.',
+        inputSchema: { type: 'object', required: ['audioPath'], properties: { audioPath: { type: 'string' } } },
+        run: async (a) => {
+          if (!h.segments) throw new Error('Segment editing unavailable')
+          return h.segments.list(this.checkPath(String(a.audioPath || '')))
+        }
+      },
+      {
+        name: 'preview_segments',
+        description:
+          'Re-generate selected sentences (0-based indices) as candidate clips without touching the full audio. Optional seed, params (speed/topK/topP/temperature/sampleSteps/repetitionPenalty), texts {"<index>": "new text"}, count (1-8 candidates). Returns editId + candidates; then call commit_segment.',
+        long: true,
+        inputSchema: {
+          type: 'object',
+          required: ['audioPath', 'indices'],
+          properties: {
+            audioPath: { type: 'string' },
+            indices: { type: 'array', items: { type: 'number' } },
+            seed: { type: 'number' },
+            params: { type: 'object' },
+            texts: { type: 'object' },
+            count: { type: 'number' }
+          }
+        },
+        run: async (a) => {
+          if (!h.segments) throw new Error('Segment editing unavailable')
+          const indices = Array.isArray(a.indices) ? a.indices.map(Number) : []
+          return h.segments.preview(
+            this.checkPath(String(a.audioPath || '')),
+            indices,
+            { seed: a.seed, params: a.params, texts: a.texts },
+            Number(a.count) || 1
+          )
+        }
+      },
+      {
+        name: 'commit_segment',
+        description: 'Replace sentences in the full audio with chosen preview candidates. choices: [{index, candidate}]. Later sentences shift; subtitles stay valid. Marks the audio as edited.',
+        inputSchema: {
+          type: 'object',
+          required: ['audioPath', 'editId', 'choices'],
+          properties: {
+            audioPath: { type: 'string' },
+            editId: { type: 'string' },
+            choices: { type: 'array', items: { type: 'object', properties: { index: { type: 'number' }, candidate: { type: 'number' } } } },
+            matchLoudness: { type: 'boolean' }
+          }
+        },
+        run: async (a) => {
+          if (!h.segments) throw new Error('Segment editing unavailable')
+          const choices = (Array.isArray(a.choices) ? a.choices : []).map((c) => ({ index: Number((c as Json).index), candidate: Number((c as Json).candidate ?? 0) }))
+          const t = h.segments.commit(this.checkPath(String(a.audioPath || '')), String(a.editId || ''), choices, a.matchLoudness !== false) as Json
+          return { duration: t.duration, editCount: t.editCount }
+        }
+      },
+      {
+        name: 'revert_edits',
+        description: "Undo segment replacements: mode 'last' (one step) or 'original'.",
+        inputSchema: { type: 'object', required: ['audioPath'], properties: { audioPath: { type: 'string' }, mode: { type: 'string', enum: ['last', 'original'] } } },
+        run: async (a) => {
+          if (!h.segments) throw new Error('Segment editing unavailable')
+          const t = h.segments.revert(this.checkPath(String(a.audioPath || '')), a.mode === 'original' ? 'original' : 'last') as Json
+          return { duration: t.duration, edited: !!t.edited }
         }
       },
       {
@@ -491,18 +675,19 @@ export const MCP_PROMPTS = [
 2. Split the script into short utterances, id like "s01_003_alice".
 3. synthesize_script {outputDir, lines:[{id,text,voice}], subtitleFormats:["srt"]}. Poll job_status if it returns a jobId.
 4. For lines with warnings, call synthesize again for that line with the same fileName/outputDir.
-5. Report manifest path, total duration and remaining warnings. Assemble video with ffmpeg if asked.`
+5. Bad sentences inside a long line: list_segments -> preview_segments {indices, count:2} -> commit_segment instead of regenerating the whole line.
+6. Report manifest path, total duration and remaining warnings. Assemble video with mix_dub if asked.`
   },
   {
     name: 'localize_video',
     description: 'Translate and re-dub a video: extract, transcribe, translate, synthesize timed lines, mix.',
     text: `Localized dubbing:
-1. ffmpeg -i in.mp4 -vn -ac 1 -ar 16000 src.wav; split into utterances with ffmpeg silencedetect, keep each clip's start/end.
-2. transcribe the clips.
-3. Translate each line; keep spoken length close to the original slot (CJK ~4-5 chars/s).
-4. synthesize_script, id = clip index. If a result is longer than its slot, shorten the translation or set params.speed (<=1.15) and regenerate that line.
-5. Mix with ffmpeg (adelay per clip at its start, duck/remove original vocals). export_subtitle if needed.
-Speaker identification is the caller's job.`
+1. diarize {audioPath: video, numSpeakers if known} -> lines [{start,end,speaker,text}] + references per speaker.
+2. For each speaker: voice_from_span {sourcePath: video, start, end, name, transcript} using the best reference (skip if the user maps speakers to existing voices).
+3. Translate each line; keep spoken length close to its slot (CJK ~4-5 chars/s).
+4. synthesize_script {outputDir, lines:[{id, text, voice, start, end}]}. Lines are fitted to their window; for indices in "overflow" shorten the translation and regenerate those lines.
+5. mix_dub {basePath: video, items:[{audioPath, start}], outputPath: out.mp4, bgm:'duck'}.
+6. export_subtitle on lines if needed. Check speaker labels with the user when confidence is low.`
   },
   {
     name: 'build_voice_library',

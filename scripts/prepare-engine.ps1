@@ -71,14 +71,16 @@ Copy-FileIfExists (Join-Path $Source "GPT_SoVITS\pretrained_models\gsv-v5-pretra
 Write-Host "[4/6] tools (without UVR5 and old ASR models)..."
 Copy-Tree (Join-Path $Source "tools") (Join-Path $Destination "tools") @("uvr5", "denoise-model", (Join-Path $Source "tools\asr\models"), "__pycache__")
 
-Write-Host "[5/6] ASR models (SenseVoice only)..."
+Write-Host "[5/6] ASR models (SenseVoice + VAD + CAM++)..."
 $cache = Join-Path $env:USERPROFILE ".cache\modelscope"
 $sense = Join-Path $cache "hub\models\iic\SenseVoiceSmall"
 $vad = Join-Path $cache "models\iic--speech_fsmn_vad_zh-cn-16k-common-pytorch\snapshots\master"
+$spk = Join-Path $cache "hub\models\iic\speech_campplus_sv_zh-cn_16k-common"
 $asrRoot = Join-Path $Destination "models\asr"
 New-Item -ItemType Directory -Force -Path $asrRoot | Out-Null
 if (Test-Path $sense) { Copy-Tree $sense (Join-Path $asrRoot "SenseVoiceSmall") } else { throw "SenseVoiceSmall not found: $sense" }
 if (Test-Path $vad) { Copy-Tree $vad (Join-Path $asrRoot "fsmn-vad") } else { throw "FSMN-VAD not found: $vad" }
+if (Test-Path $spk) { Copy-Tree $spk (Join-Path $asrRoot "campplus") } else { Write-Warning "CAM++ not found: $spk (speaker diarization will be unavailable)" }
 
 Write-Host "[6/6] weights folders, manifest and license..."
 foreach ($dir in @("GPT_weights_v5turbo", "SoVITS_weights_v5turbo", "output")) {
@@ -93,7 +95,7 @@ $manifest = [ordered]@{
   engine = "GPT-SoVITS v5turbo"
   source = $Source
   preparedAt = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-  asr = @("SenseVoiceSmall", "fsmn-vad")
+  asr = @("SenseVoiceSmall", "fsmn-vad", "campplus")
 }
 $manifest | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $Destination "engine-manifest.json") -Encoding UTF8
 

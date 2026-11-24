@@ -12,7 +12,7 @@ export function ffprobePath(engineRoot: string): string {
   return path.join(engineRoot, 'runtime', 'ffprobe.exe')
 }
 
-function run(command: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+export function run(command: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const proc = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''

@@ -18,6 +18,7 @@ import {
 import type { AsrFileResult, Bootstrap, EngineStatus, WorkerEvent } from '@shared/types'
 import { ProgressTimeline, type StageItem } from '../components/ProgressTimeline'
 import { DropZone } from '../components/DropZone'
+import { DiarizePanel } from '../components/DiarizePanel'
 import { Select } from '../components/Select'
 import { basename, cn, formatBytes, formatDuration } from '../lib/format'
 import { scrollWithinContent } from '../lib/scroll'
@@ -184,6 +185,8 @@ export function AsrPage({ bootstrap, engines, notify, onSendToReference }: Props
           <span className="soft-badge">本地推理</span>
         </div>
       </section>
+
+      <DiarizePanel notify={notify} />
 
       <section className="card panel asr-input-panel">
         <div className="panel-head">

@@ -23,3 +23,5 @@ scripts/screenshot*.mjs
 scripts/shot-*.mjs
 .DS_Store
 Thumbs.db
+
+scripts/prep-*.mjs

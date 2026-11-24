@@ -89,6 +89,12 @@ export function scanModels(engineRoot: string): ModelCatalog {
     path.join(engineRoot, 'tools', 'asr', 'models', 'speech_fsmn_vad_zh-cn-16k-common-pytorch'),
     path.join(cache, 'modelscope', 'models', 'iic--speech_fsmn_vad_zh-cn-16k-common-pytorch', 'snapshots', 'master')
   ])
+  const spkDir = resolveDir([
+    path.join(engineRoot, 'models', 'asr', 'campplus'),
+    path.join(engineRoot, 'models', 'asr', 'speech_campplus_sv_zh-cn_16k-common'),
+    path.join(cache, 'modelscope', 'hub', 'models', 'iic', 'speech_campplus_sv_zh-cn_16k-common'),
+    path.join(cache, 'modelscope', 'models', 'iic--speech_campplus_sv_zh-cn_16k-common', 'snapshots', 'master')
+  ])
 
   return {
     tts: {
@@ -97,7 +103,8 @@ export function scanModels(engineRoot: string): ModelCatalog {
     },
     asr: {
       sensevoice: asrOption('sensevoice', sensevoiceDir, 'SenseVoice · 快速'),
-      vad: asrOption('vad', vadDir, 'FSMN-VAD')
+      vad: asrOption('vad', vadDir, 'FSMN-VAD'),
+      spk: asrOption('vad', spkDir, 'CAM++ 说话人')
     }
   }
 }

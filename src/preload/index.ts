@@ -72,6 +72,22 @@ const api: AppApi = {
     export: (ids: string[]) => ipcRenderer.invoke('history:export', ids),
     clear: () => ipcRenderer.invoke('history:clear')
   },
+  dub: {
+    pickMedia: () => ipcRenderer.invoke('dub:pick-media'),
+    diarize: (src: string, opts?: unknown) => ipcRenderer.invoke('dub:diarize', src, opts),
+    voiceFromSpan: (src: string, start: number, end: number, name: string, transcript?: string, lang?: string) =>
+      ipcRenderer.invoke('dub:voice-from-span', src, start, end, name, transcript, lang),
+    saveScript: (src: string, lines: unknown[]) => ipcRenderer.invoke('dub:save-script', src, lines)
+  },
+  segments: {
+    list: (audioPath: string) => ipcRenderer.invoke('segments:list', audioPath),
+    preview: (audioPath: string, indices: number[], overrides?: unknown, count?: number, source?: unknown) =>
+      ipcRenderer.invoke('segments:preview', audioPath, indices, overrides, count, source),
+    commit: (audioPath: string, editId: string, choices: { index: number; candidate: number }[], matchLoudness?: boolean) =>
+      ipcRenderer.invoke('segments:commit', audioPath, editId, choices, matchLoudness),
+    discard: (editId: string) => ipcRenderer.invoke('segments:discard', editId),
+    revert: (audioPath: string, mode: 'original' | 'last') => ipcRenderer.invoke('segments:revert', audioPath, mode)
+  },
   voices: {
     list: () => ipcRenderer.invoke('voices:list'),
     import: (payload) => ipcRenderer.invoke('voices:import', payload),

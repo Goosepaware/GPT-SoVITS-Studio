@@ -110,7 +110,41 @@ node --experimental-strip-types scripts/test-subtitles.ts   # 字幕六种格式
 node --experimental-strip-types scripts/test-clients.mjs    # 客户端配置写入（沙箱 HOME）
 node scripts/test-mcp.mjs                                   # HTTP 协议 + 真实合成
 node scripts/test-stdio.mjs                                 # stdio 桥接 + 自动拉起
+node scripts/test-mcp-p2.mjs                                # 分段编辑 / 说话人 / 混音（真实推理）
+& node_modules\\.bin\\esbuild.cmd scripts/test-segment-edit.mjs --bundle --platform=node --format=esm --outfile=$env:TEMP\\seg-test.mjs
+node $env:TEMP\\seg-test.mjs                                # 分段替换 / 撤销单元测试
 ```
+
+## 分段编辑
+
+时间轴升级到 v2（`tts_worker.py` 写、`segmentEdit.ts` 读）：
+
+- `source` 保存音色 / 参考音频 / 参考文本 / 语言 / 模型 / 参数，重新生成时直接用；
+  临时参考音频会复制到 `data/refs/<hash>.wav`，避免 `data/temp` 被清理后失效。
+- `gain` 是整段峰值缩放系数，新片段按同样系数处理；`gap` 是句间静音。
+- 每句带 `seed`、`flags`、`params`（单句改过参数时）、`edited`。
+
+重新生成流程：
+
+1. `preview_segments`：worker 只生成选中的句子，写到 `data/temp/preview/<editId>/`，
+   支持 `seed` / `params` / `texts` / `count`（1–8 个候选），不碰完整音频。
+2. `commitSegments`（主进程，纯 Node）：读 PCM16 WAV，替换 `[start,end)`，后面句子整体平移，
+   可按前后句 RMS 匹配响度；第一次替换前备份 `.orig.*`，每次替换前备份 `.prev.*`。
+3. `revertEdits`：`last` 撤销一步，`original` 还原并删除备份。
+4. 替换后写回 `edited` / `editCount`，历史记录同步，自动输出字幕会重新生成。
+
+## 说话人分离与译制
+
+- `python/diarize.py`：FSMN-VAD 切段 → 4–6 秒窗口 → CAM++ 嵌入 → 平均连接 AHC 聚类
+  （`numSpeakers` 指定人数，否则按余弦距离阈值判断）→ 短段并入邻居 → 合并相邻同人段。
+- `asr_worker.py` 的 `diarize` 命令：加载 VAD / CAM++，逐句调用 SenseVoice 识别。
+  注意：funasr 的模型注册依赖 `distutils`，运行时必须先 `import setuptools`，否则 CAMPPlus 注册失败。
+- CAM++ 模型放在 `engine/models/asr/campplus`（`campplus_cn_common.bin` + `config.yaml` +
+  `configuration.json`），来自 ModelScope `iic/speech_campplus_sv_zh-cn_16k-common`。
+- `src/main/dub.ts`：`extractAudio` / `cutClip` / `atempo` / `fitLine` / `mixDub`，全部走引擎自带的 ffmpeg。
+  时长适配顺序：默认语速 → 0.85–1.15 重生成 → atempo ±10% → 标 `overflow`。
+- 混音 `bgm`：`keep`（原声+配音）、`duck`（配音时压低原声）、`remove`（只留配音，非真正人声分离）。
+  输出 `.mp4/.mkv` 时复制原视频流。
 
 ## 构建便携版
 

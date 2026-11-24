@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
+import shutil
 import os
 import random
 import sys
@@ -27,6 +29,18 @@ FLAG_LABELS = {
     "too_long": "时长偏长（可能重复/拖音）",
     "too_short": "时长偏短（可能漏字）",
 }
+
+
+PARAM_KEYS = ("speed", "topK", "topP", "temperature", "sampleSteps", "repetitionPenalty")
+PARAM_DEFAULTS = {"speed": 1.0, "topK": 15, "topP": 1.0, "temperature": 1.0, "sampleSteps": 4, "repetitionPenalty": 1.35}
+
+
+def _params_from(command: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k in PARAM_KEYS:
+        v = command.get(k, PARAM_DEFAULTS[k])
+        out[k] = int(v) if k in ("topK", "sampleSteps") else float(v)
+    return out
 
 
 def _flag_score(flags: list[str]) -> int:
@@ -194,6 +208,137 @@ class TtsWorker(WorkerBase):
         wav = np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
         return wav, sr
 
+    def _persist_ref(self, ref_path: str) -> str:
+        """Copy temp reference audio into data/refs so segment re-generation still works later."""
+        try:
+            temp_dir = os.path.abspath(os.path.join(self.data_dir, "temp"))
+            if not os.path.abspath(ref_path).lower().startswith(temp_dir.lower()):
+                return ref_path
+            h = hashlib.sha1()
+            with open(ref_path, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            refs = os.path.join(self.data_dir, "refs")
+            os.makedirs(refs, exist_ok=True)
+            dst = os.path.join(refs, h.hexdigest()[:16] + (os.path.splitext(ref_path)[1] or ".wav"))
+            if not os.path.exists(dst):
+                shutil.copyfile(ref_path, dst)
+            return dst
+        except Exception as exc:
+            self.proto.log(f"参考音频备份失败：{exc}")
+            return ref_path
+
+    def _preview_segments(self, command: dict[str, Any]) -> None:
+        """Re-generate selected sentences as candidate clips (no replacement here; main process commits)."""
+        rid = command.get("id")
+        if self.tts is None:
+            raise RuntimeError("TTS 模型尚未加载")
+        import numpy as np
+        import soundfile as sf
+        import torch
+
+        with open(command["timingPath"], "r", encoding="utf-8") as fh:
+            timing = json.load(fh)
+        src = dict(timing.get("source") or {})
+        src.update({k: v for k, v in (command.get("source") or {}).items() if v not in (None, "")})
+        ref_path = os.path.abspath(src.get("refAudioPath") or "")
+        if not os.path.exists(ref_path):
+            raise FileNotFoundError(f"参考音频不存在: {ref_path}")
+        if not (src.get("promptText") or "").strip():
+            raise ValueError("参考文本为空")
+        segs = timing.get("segments") or []
+        indices = [int(i) for i in command.get("indices") or []]
+        if not indices or any(i < 0 or i >= len(segs) for i in indices):
+            raise ValueError("分段序号无效")
+        overrides = command.get("overrides") or {}
+        texts = overrides.get("texts") or {}
+        count = max(1, min(8, int(command.get("count", 1))))
+        out_dir = os.path.abspath(command["outDir"])
+        os.makedirs(out_dir, exist_ok=True)
+        gain = float(timing.get("gain") or 1.0)
+        self.cancel_event.clear()
+        self.tts.stop_flag = False
+        self.tts.set_ref_audio(ref_path)
+
+        results: list[dict[str, Any]] = []
+        total = len(indices) * count
+        done = 0
+        for idx in indices:
+            seg = segs[idx]
+            params = dict(PARAM_DEFAULTS)
+            params.update((src.get("params") or {}))
+            params.update(seg.get("params") or {})
+            params.update({k: v for k, v in (overrides.get("params") or {}).items() if k in PARAM_KEYS and v is not None})
+            text = str(texts.get(str(idx)) or seg.get("text") or "").strip()
+            if not text:
+                raise ValueError(f"第 {idx + 1} 句文本为空")
+            base_inputs = {
+                "text_lang": src.get("textLang") or "auto",
+                "ref_audio_path": ref_path,
+                "prompt_text": src.get("promptText"),
+                "prompt_lang": src.get("promptLang") or "auto",
+                "top_k": int(params["topK"]),
+                "top_p": float(params["topP"]),
+                "temperature": float(params["temperature"]),
+                "batch_threshold": 0.75,
+                "split_bucket": False,
+                "speed_factor": float(params["speed"]),
+                "fragment_interval": 0.0,
+                "parallel_infer": True,
+                "repetition_penalty": float(params["repetitionPenalty"]),
+                "sample_steps": int(params["sampleSteps"]),
+                "return_fragment": False,
+                "streaming_mode": False,
+            }
+            base_seed = overrides.get("seed")
+            cands: list[dict[str, Any]] = []
+            for n in range(count):
+                if self.cancel_event.is_set():
+                    self.tts.stop_flag = False
+                    self.proto.cancelled(rid)
+                    self.proto.status("ready", self.model_names(), "已停止生成")
+                    return
+                if base_seed is not None and int(base_seed) >= 0:
+                    seed = (int(base_seed) + n) % (2**31)
+                else:
+                    seed = random.randint(0, 2**31 - 1)
+                self._stage(rid, "synthesize", f"试听 · 第 {idx + 1} 句 · 候选 {n + 1}/{count}", 5 + done / total * 90, text[:42])
+                wav, sr = self._run_one(base_inputs, text, seed)
+                if self.cancel_event.is_set():
+                    continue
+                self.warmed_up = True
+                info = analyze_segment(wav, sr)
+                flags = detect_flags(info, text, float(params["speed"]))
+                if info["silent"]:
+                    clip = np.zeros(int(0.2 * sr), dtype=np.float32)
+                    v0, v1 = 0.0, len(clip) / sr
+                else:
+                    clip = wav[info["trim_start"]: info["trim_end"]]
+                    v0, v1 = info["voiced_start"], info["voiced_end"]
+                clip = clip * gain
+                pcm = (np.clip(clip, -1.0, 1.0) * 32767.0).astype(np.int16)
+                path = os.path.join(out_dir, f"seg{idx}_cand{n}.wav")
+                sf.write(path, pcm, sr, subtype="PCM_16")
+                cands.append(
+                    {
+                        "candidate": n,
+                        "path": path,
+                        "duration": round(len(pcm) / sr, 3),
+                        "sampleRate": sr,
+                        "voicedStart": round(v0, 3),
+                        "voicedEnd": round(v1, 3),
+                        "pauses": [round(p, 3) for p in info["pauses"]],
+                        "seed": seed,
+                        "flags": flags,
+                    }
+                )
+                done += 1
+            results.append({"index": idx, "text": text, "params": params, "candidates": cands})
+
+        self._stage(rid, "done", "试听生成完成", 100)
+        self.proto.status("ready", self.model_names(), None, vram_snapshot(torch))
+        self.proto.result(rid, {"outDir": out_dir, "segments": results})
+
     def _synthesize(self, command: dict[str, Any]) -> None:
         rid = command.get("id")
         if self.tts is None:
@@ -339,17 +484,42 @@ class TtsWorker(WorkerBase):
 
         audio = np.concatenate(pieces)
         peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+        gain = 1.0
         if peak > 0.99:
             # Scale down instead of hard clipping to avoid distortion.
-            audio = audio * (0.98 / peak)
+            gain = 0.98 / peak
+            audio = audio * gain
         pcm = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16)
         sf.write(output_path, pcm, sample_rate, subtype="PCM_16")
         duration = len(pcm) / float(sample_rate)
 
+        for t in timeline:
+            t["params"] = None
+            t["edited"] = False
         timing_path = os.path.splitext(output_path)[0] + ".timing.json"
         with open(timing_path, "w", encoding="utf-8") as fh:
             json.dump(
-                {"version": 1, "sampleRate": sample_rate, "duration": round(duration, 3), "seed": used_seed, "segments": timeline},
+                {
+                    "version": 2,
+                    "sampleRate": sample_rate,
+                    "duration": round(duration, 3),
+                    "seed": used_seed,
+                    "gain": round(gain, 6),
+                    "gap": gap_s,
+                    "source": {
+                        "voiceId": command.get("voiceId") or "",
+                        "refAudioPath": self._persist_ref(ref_path),
+                        "promptText": prompt_text,
+                        "promptLang": prompt_lang,
+                        "textLang": text_lang,
+                        "gptPath": self.gpt_path,
+                        "sovitsPath": self.sovits_path,
+                        "params": _params_from(command),
+                    },
+                    "edited": False,
+                    "editCount": 0,
+                    "segments": timeline,
+                },
                 fh,
                 ensure_ascii=False,
                 indent=1,
@@ -382,6 +552,8 @@ class TtsWorker(WorkerBase):
             self._load(command)
         elif cmd == "synthesize":
             self._synthesize(command)
+        elif cmd == "preview_segments":
+            self._preview_segments(command)
         elif cmd == "unload":
             self._unload(command)
         else:

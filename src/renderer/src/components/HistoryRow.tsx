@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import { motion } from 'framer-motion'
-import { Captions, Dices, FolderOpen, Trash2 } from 'lucide-react'
+import { Captions, Dices, FolderOpen, Scissors, Trash2 } from 'lucide-react'
 import type { HistoryEntry } from '@shared/types'
 import { AudioPlayer } from './AudioPlayer'
+import { SegmentEditor } from './SegmentEditor'
 import { basename, cn, formatRelative } from '../lib/format'
 import { useAudioUrl } from '../lib/useAudioUrl'
 
@@ -16,6 +18,8 @@ interface Props {
 
 export function HistoryRow({ entry, selected, selectMode, onToggle, onDelete, onReuseSeed }: Props): JSX.Element {
   const audio = useAudioUrl(entry.filePath)
+  const [editing, setEditing] = useState(false)
+  const canReuse = !entry.edited && typeof entry.seed === 'number'
   return (
     <motion.div
       initial={{ opacity: 0, y: 5 }}
@@ -35,26 +39,32 @@ export function HistoryRow({ entry, selected, selectMode, onToggle, onDelete, on
         />
       )}
       <div className="history-text" title={entry.text}>
-        <strong>{entry.text || '（无文本）'}</strong>
+        <strong>
+          {entry.edited && <span className="edited-badge">已编辑</span>}
+          {entry.text || '（无文本）'}
+        </strong>
         <span>
           {entry.voiceName || '临时音色'} · {entry.duration.toFixed(1)}s · {formatRelative(entry.createdAt)}
-          {typeof entry.seed === 'number' ? ` · 种子 ${entry.seed}` : ''}
+          {canReuse ? ` · 种子 ${entry.seed}` : ''}
         </span>
         <em>{basename(entry.filePath)}</em>
       </div>
       <div className="history-wave" onClick={(event) => event.stopPropagation()}>
         {audio.url ? (
-          <AudioPlayer src={audio.url} compact durationHint={entry.duration} />
+          <AudioPlayer key={`${entry.duration}`} src={audio.url} compact durationHint={entry.duration} />
         ) : (
           <div className="wave-skeleton">{audio.error ? '音频不可用' : '读取波形…'}</div>
         )}
       </div>
       <div className="history-row-actions" onClick={(event) => event.stopPropagation()}>
-        {typeof entry.seed === 'number' && (
+        {canReuse && (
           <button className="icon-btn small seed-btn" title={`复用种子 ${entry.seed}`} onClick={() => onReuseSeed(entry.seed as number)}>
             <Dices size={14} />
           </button>
         )}
+        <button className="icon-btn small" title="分段编辑：重新生成某几句" onClick={() => setEditing(true)}>
+          <Scissors size={14} />
+        </button>
         <button
           className="icon-btn small"
           title="导出字幕（默认格式，可在设置中修改）"
@@ -76,6 +86,7 @@ export function HistoryRow({ entry, selected, selectMode, onToggle, onDelete, on
           <Trash2 size={14} />
         </button>
       </div>
+      {editing && <SegmentEditor audioPath={entry.filePath} onClose={() => setEditing(false)} />}
     </motion.div>
   )
 }

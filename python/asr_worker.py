@@ -49,6 +49,9 @@ class AsrWorker(WorkerBase):
     def on_start(self) -> None:
         activate_engine(self.engine_root)
         import torch  # noqa: F401
+        # setuptools provides the `distutils` module; funasr's model registry imports it,
+        # and without it CAMPPlus (CAM++) fails to register on this runtime.
+        import setuptools  # noqa: F401
         # Preload FunASR / scipy / sklearn while the process is still
         # single-threaded; importing them with the stdin/watchdog threads
         # running deadlocks OpenBLAS on this runtime.
@@ -108,6 +111,7 @@ class AsrWorker(WorkerBase):
             disable_update=True,
             trust_remote_code=model_key == "fun-asr-nano",
         )
+        self.device = device
         self.model_key = model_key
         self.model_path = model_path
         self.vad_path = vad_path
@@ -187,7 +191,80 @@ class AsrWorker(WorkerBase):
         self.proto.status("ready", self.model_names(), None, vram_snapshot())
         self.proto.result(rid, results)
 
+    def _diarize(self, command: dict[str, Any]) -> None:
+        """{audioPath (16k mono wav), spkModelPath, numSpeakers?, threshold?, transcribe?, language?}"""
+        rid = command.get("id")
+        import diarize as dz
+
+        AutoModel = self._auto_model_cls
+        audio_path = os.path.abspath(command.get("audioPath") or "")
+        spk_path = os.path.abspath(command.get("spkModelPath") or "")
+        if not os.path.exists(audio_path):
+            raise FileNotFoundError(f"音频不存在: {audio_path}")
+        if not os.path.isdir(spk_path):
+            raise FileNotFoundError(f"说话人模型目录不存在: {spk_path}（需要 CAM++）")
+        vad_path = self.vad_path or os.path.abspath(command.get("vadPath") or "")
+        if not os.path.isdir(vad_path):
+            raise FileNotFoundError("VAD 模型目录不存在")
+        device = getattr(self, "device", "cpu")
+        self.cancel_event.clear()
+        stage = lambda label, pct: self.proto.stage(rid, "diarize", label, pct)  # noqa: E731
+        stage("加载说话人模型", 2)
+        if getattr(self, "_spk", None) is None or self._spk_path != spk_path:
+            self._spk = AutoModel(model=spk_path, device=device, disable_update=True)
+            self._spk_path = spk_path
+        if getattr(self, "_vad", None) is None or self._vad_only_path != vad_path:
+            self._vad = AutoModel(model=vad_path, device=device, disable_update=True)
+            self._vad_only_path = vad_path
+        wav = dz.load_audio(audio_path)
+        n = command.get("numSpeakers")
+        try:
+            res = dz.diarize(
+                wav,
+                self._vad,
+                self._spk,
+                int(n) if n else None,
+                float(command.get("threshold") or 0.6),
+                stage,
+                self.cancel_event.is_set,
+            )
+        except KeyboardInterrupt:
+            self.proto.cancelled(rid)
+            self.proto.status("ready" if self.model else "stopped", self.model_names(), "已停止")
+            return
+        items = res["items"]
+        if command.get("transcribe", True) and self.model is not None:
+            import soundfile as sf
+
+            tmp_dir = os.path.join(self.data_dir, "temp", "diarize")
+            os.makedirs(tmp_dir, exist_ok=True)
+            for k, it in enumerate(items):
+                if self.cancel_event.is_set():
+                    break
+                clip = wav[int(it["start"] * dz.SR): int(it["end"] * dz.SR)]
+                p = os.path.join(tmp_dir, f"line_{k}.wav")
+                sf.write(p, clip, dz.SR, subtype="PCM_16")
+                try:
+                    raw = self.model.generate(input=p)[0]
+                    text, lang = clean_asr_text(raw.get("text", "") if isinstance(raw, dict) else str(raw))
+                except Exception as exc:  # keep going
+                    text, lang = "", None
+                    self.proto.log(f"line {k} ASR failed: {exc}")
+                it["text"] = text
+                it["lang"] = lang or command.get("language") or "auto"
+                os.remove(p)
+                if k % 5 == 0:
+                    stage(f"识别台词 {k + 1}/{len(items)}", 65 + 33 * k / max(1, len(items)))
+        refs = dz.reference_candidates(wav, items, res["centroids"])
+        for it in items:
+            it.pop("_emb", None)
+        stage("完成", 100)
+        self.proto.status("ready" if self.model else "stopped", self.model_names(), None, vram_snapshot())
+        self.proto.result(rid, {"items": items, "numSpeakers": res["numSpeakers"], "references": refs, "duration": round(len(wav) / dz.SR, 3)})
+
     def _unload(self, command: dict[str, Any]) -> None:
+        self._spk = None
+        self._vad = None
         self._release_model()
         self.model_path = ""
         self.vad_path = ""
@@ -201,6 +278,8 @@ class AsrWorker(WorkerBase):
             self._load(command)
         elif cmd == "transcribe":
             self._transcribe(command)
+        elif cmd == "diarize":
+            self._diarize(command)
         elif cmd == "unload":
             self._unload(command)
         else:

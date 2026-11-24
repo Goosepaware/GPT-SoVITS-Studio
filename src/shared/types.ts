@@ -34,6 +34,8 @@ export interface ModelCatalog {
   asr: {
     sensevoice: ModelOption | null
     vad: ModelOption | null
+    /** CAM++ speaker embedding model (diarization) */
+    spk?: ModelOption | null
   }
 }
 
@@ -191,6 +193,82 @@ export interface HistoryEntry {
   createdAt: number
   seed?: number
   params?: Record<string, unknown>
+  /** Segments were replaced: params can no longer reproduce the audio, subtitles still work. */
+  edited?: boolean
+}
+
+export interface DiarizeLine {
+  start: number
+  end: number
+  speaker: string
+  text?: string
+  lang?: string
+  confidence: number
+}
+
+export interface DiarizeResult {
+  items: DiarizeLine[]
+  numSpeakers: number
+  references: Record<string, { start: number; end: number; text: string; score: number }[]>
+  duration: number
+  /** 16 kHz wav actually analysed */
+  audioPath?: string
+  sourcePath?: string
+}
+
+export interface SegParamsT {
+  speed?: number
+  topK?: number
+  topP?: number
+  temperature?: number
+  sampleSteps?: number
+  repetitionPenalty?: number
+}
+
+export interface SegItem {
+  index: number
+  text: string
+  start: number
+  end: number
+  voicedStart: number
+  voicedEnd: number
+  seed?: number
+  flags?: string[]
+  params?: SegParamsT | null
+  edited?: boolean
+}
+
+export interface SegTiming {
+  version: number
+  sampleRate: number
+  duration: number
+  seed?: number
+  gap?: number
+  source?: { voiceId?: string; refAudioPath?: string; promptText?: string; params?: SegParamsT }
+  edited?: boolean
+  editCount?: number
+  segments: SegItem[]
+}
+
+export interface SegEditState {
+  edited: boolean
+  editCount: number
+  hasOriginal: boolean
+  hasPrevious: boolean
+}
+
+export interface SegCandidate {
+  candidate: number
+  path: string
+  duration: number
+  seed: number
+  flags: string[]
+}
+
+export interface SegPreviewSession {
+  editId: string
+  audioPath: string
+  segments: { index: number; text: string; params: SegParamsT; candidates: SegCandidate[] }[]
 }
 
 export interface Voice {
@@ -297,6 +375,25 @@ export interface AppApi {
     removeMany: (ids: string[]) => Promise<HistoryEntry[]>
     export: (ids: string[]) => Promise<string | null>
     clear: () => Promise<void>
+  }
+  dub: {
+    pickMedia: () => Promise<string | null>
+    diarize: (src: string, opts?: { numSpeakers?: number; language?: string; threshold?: number }) => Promise<DiarizeResult>
+    voiceFromSpan: (src: string, start: number, end: number, name: string, transcript?: string, lang?: string) => Promise<Voice>
+    saveScript: (src: string, lines: unknown[]) => Promise<string | null>
+  }
+  segments: {
+    list: (audioPath: string) => Promise<{ timing: SegTiming; state: SegEditState }>
+    preview: (
+      audioPath: string,
+      indices: number[],
+      overrides?: { seed?: number; params?: SegParamsT; texts?: Record<string, string> },
+      count?: number,
+      source?: Record<string, unknown>
+    ) => Promise<SegPreviewSession>
+    commit: (audioPath: string, editId: string, choices: { index: number; candidate: number }[], matchLoudness?: boolean) => Promise<SegTiming>
+    discard: (editId: string) => Promise<void>
+    revert: (audioPath: string, mode: 'original' | 'last') => Promise<SegTiming>
   }
   voices: {
     list: () => Promise<Voice[]>

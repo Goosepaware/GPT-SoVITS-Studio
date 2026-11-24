@@ -161,6 +161,14 @@ export class Storage {
     return this.listHistory()
   }
 
+  updateHistory(id: string, patch: Partial<Omit<HistoryEntry, 'id' | 'filePath'>>): void {
+    const stored = readJson<StoredHistory[]>(this.historyFile, [])
+    const i = stored.findIndex((item) => item.id === id)
+    if (i < 0) return
+    stored[i] = { ...stored[i], ...patch }
+    writeJson(this.historyFile, stored)
+  }
+
   removeHistory(id: string): HistoryEntry[] {
     return this.removeHistoryMany([id])
   }

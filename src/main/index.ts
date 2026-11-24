@@ -28,7 +28,23 @@ import { agentSetupPrompt, clientSnippet, configureClient, ensureBridge, listCli
 import { randomToken } from './config'
 import { Menu, Tray, nativeImage } from 'electron'
 import type { McpStatus } from '@shared/types'
-import { SUBTITLE_EXT, hasTiming, subtitleFileName, writeSubtitle, writeSubtitles } from './subtitles'
+import { SUBTITLE_EXT, hasTiming, subtitleFileName, timingPathFor, writeSubtitle, writeSubtitles } from './subtitles'
+import {
+  commitSegments,
+  dropPreview,
+  editState,
+  newEditId,
+  readTimingV2,
+  rememberPreview,
+  revertEdits,
+  type Choice,
+  type PreviewSegment,
+  type PreviewSession,
+  type SegParams,
+  type TimingSource
+} from './segmentEdit'
+import { cutClip, extractAudio, fitLine, mixDub, type MixItem } from './dub'
+import type { DiarizeResult } from '@shared/types'
 
 const execFileAsync = promisify(execFile)
 
@@ -445,6 +461,37 @@ function registerIpc(): void {
     return copied.length ? result.filePaths[0] : null
   })
   ipcMain.handle('history:clear', () => storage.clearHistory())
+  ipcMain.handle('dub:pick-media', async () => {
+    const r = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: '视频 / 音频', extensions: ['mp4', 'mkv', 'mov', 'webm', 'avi', 'wav', 'mp3', 'flac', 'm4a', 'aac', 'ogg', 'opus'] }]
+    })
+    return r.canceled ? null : r.filePaths[0]
+  })
+  ipcMain.handle('dub:diarize', (_e, src: string, opts) => dubOps.diarize(src, opts || {}))
+  ipcMain.handle('dub:voice-from-span', async (_e, src: string, start: number, end: number, name: string, transcript?: string, lang?: string) => {
+    const v = await dubOps.voiceFromSpan(src, start, end, name, transcript, lang)
+    send('voices:changed', null)
+    return v
+  })
+  ipcMain.handle('dub:save-script', async (_e, src: string, lines: unknown[]) => {
+    const r = await dialog.showSaveDialog({
+      defaultPath: src.replace(/\.[^.\\/]+$/, '') + '.speakers.json',
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (r.canceled || !r.filePath) return null
+    fs.writeFileSync(r.filePath, JSON.stringify({ source: src, lines }, null, 1), 'utf-8')
+    return r.filePath
+  })
+  ipcMain.handle('segments:list', (_e, audioPath: string) => segmentOps.list(audioPath))
+  ipcMain.handle('segments:preview', (_e, audioPath: string, indices: number[], overrides, count?: number, source?: TimingSource) =>
+    segmentOps.preview(audioPath, indices, overrides, count, source)
+  )
+  ipcMain.handle('segments:commit', (_e, audioPath: string, editId: string, choices: Choice[], matchLoudness?: boolean) =>
+    segmentOps.commit(audioPath, editId, choices, matchLoudness !== false)
+  )
+  ipcMain.handle('segments:discard', (_e, editId: string) => segmentOps.discard(editId))
+  ipcMain.handle('segments:revert', (_e, audioPath: string, mode: 'original' | 'last') => segmentOps.revert(audioPath, mode))
 
   ipcMain.handle('voices:list', () => storage.listVoices())
   ipcMain.handle('voices:import', async (_event, payload: { sourcePath: string; name: string; transcript: string; promptLang: string }) => {
@@ -633,6 +680,97 @@ async function doSynthesize(options: Record<string, unknown>, outputOverride?: s
   return result
 }
 
+// ------------------------------------------------------------ segment edit
+
+async function doPreviewSegments(
+  audioPath: string,
+  indices: number[],
+  overrides: { seed?: number; params?: SegParams; texts?: Record<string, string> } = {},
+  count = 1,
+  source?: TimingSource
+): Promise<PreviewSession> {
+  const timing = readTimingV2(audioPath)
+  const src = { ...(timing.source || {}), ...(source || {}) }
+  if (!src.refAudioPath || !src.promptText) throw new Error('旧版时间轴缺少音色信息，请先选择音色和参数')
+  const worker = await ensureTtsLoaded(src.gptPath || undefined, src.sovitsPath || undefined)
+  lastActivity.tts = Date.now()
+  const editId = newEditId()
+  const outDir = path.join(paths.tempDir, 'preview', editId)
+  const r = await worker.request<{ outDir: string; segments: PreviewSegment[] }>(
+    'preview_segments',
+    { timingPath: timingPathFor(audioPath), indices, overrides, count, outDir, source },
+    30 * 60 * 1000
+  )
+  const session: PreviewSession = { editId, audioPath, outDir, createdAt: Date.now(), segments: r.segments }
+  rememberPreview(session)
+  return session
+}
+
+function afterSegmentChange(audioPath: string): void {
+  const entry = storage.listHistory().find((h) => path.resolve(h.filePath) === path.resolve(audioPath))
+  if (entry) {
+    try {
+      const t = readTimingV2(audioPath)
+      storage.updateHistory(entry.id, { duration: t.duration, edited: !!t.edited })
+    } catch {
+      /* ignore */
+    }
+  }
+  if (config.subtitle.autoExport) {
+    try {
+      writeSubtitles(audioPath, config.subtitle.autoFormats, config.subtitle)
+    } catch {
+      /* ignore */
+    }
+  }
+  send('history:changed', null)
+}
+
+const segmentOps = {
+  list: (audioPath: string) => ({ timing: readTimingV2(audioPath), state: editState(audioPath) }),
+  preview: doPreviewSegments,
+  commit: (audioPath: string, editId: string, choices: Choice[], matchLoudness = true) => {
+    const t = commitSegments(audioPath, editId, choices, matchLoudness)
+    afterSegmentChange(audioPath)
+    return t
+  },
+  discard: (editId: string) => dropPreview(editId),
+  revert: (audioPath: string, mode: 'original' | 'last') => {
+    const t = revertEdits(audioPath, mode)
+    afterSegmentChange(audioPath)
+    return t
+  }
+}
+
+// ------------------------------------------------------------ diarization / dubbing
+
+const dubOps = {
+  extractAudio: (src: string, start?: number, end?: number) => extractAudio(config.engineRoot, src, paths.tempDir, start, end),
+  diarize: (src: string, opts: { numSpeakers?: number; language?: string; transcribe?: boolean; threshold?: number } = {}) =>
+    gpuQueue(async () => {
+      const spk = scanModels(config.engineRoot).asr.spk
+      if (!spk) throw new Error('未找到 CAM++ 说话人模型，请放到 engine/models/asr/campplus')
+      const wav = await extractAudio(config.engineRoot, src, paths.tempDir)
+      const w = await ensureAsrLoaded()
+      lastActivity.asr = Date.now()
+      const r = await w.request<DiarizeResult>(
+        'diarize',
+        { audioPath: wav, spkModelPath: spk.path, transcribe: opts.transcribe !== false, numSpeakers: opts.numSpeakers, language: opts.language, threshold: opts.threshold },
+        60 * 60 * 1000
+      )
+      return { ...r, audioPath: wav, sourcePath: src }
+    }),
+  /** Cut a speaker's reference line and save it as a voice. */
+  voiceFromSpan: async (src: string, start: number, end: number, name: string, transcript?: string, lang?: string) => {
+    const clip = path.join(paths.tempDir, 'spk', `${Date.now()}.wav`)
+    await cutClip(config.engineRoot, src, start, end, clip)
+    return buildToolHost().createVoice({ sourcePath: clip, name, transcript, lang })
+  },
+  mix: (base: string, items: MixItem[], outputPath: string, bgm?: 'keep' | 'duck' | 'remove') => mixDub(config.engineRoot, base, items, outputPath, bgm),
+  fit: (index: number, target: number, baseSpeed: number, synth: (speed: number) => Promise<{ filePath: string; duration: number }>) =>
+    fitLine(config.engineRoot, index, target, baseSpeed, synth)
+}
+
 // ------------------------------------------------------------------------ MCP
 
 let mcpServer: McpServer | null = null
@@ -715,6 +853,14 @@ function buildToolHost(): ToolHost {
       }),
     cancelTts: () => ttsWorker?.send('cancel'),
     audioFilesInFolder,
+    segments: {
+      list: segmentOps.list,
+      preview: (audioPath, indices, overrides, count) =>
+        gpuQueue(() => segmentOps.preview(audioPath, indices, overrides as { seed?: number; params?: SegParams; texts?: Record<string, string> }, count)),
+      commit: segmentOps.commit,
+      revert: segmentOps.revert
+    },
+    dub: dubOps,
     activity: mcpActivity
   }
 }

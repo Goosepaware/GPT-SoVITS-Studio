@@ -73,7 +73,10 @@ export function readTiming(audioPath: string): TimingFile {
 /** All sidecar subtitle files that may sit next to an audio file (for cleanup). */
 export function sidecarPaths(audioPath: string): string[] {
   const base = audioPath.replace(/\.[^.\\/]+$/, '')
-  return [...new Set(Object.values(SUBTITLE_EXT))].map((ext) => `${base}.${ext}`)
+  const subs = [...new Set(Object.values(SUBTITLE_EXT))].map((ext) => `${base}.${ext}`)
+  // Segment-edit backups (see segmentEdit.ts)
+  const backups = ['orig', 'prev'].flatMap((tag) => [`${base}.${tag}.wav`, `${base}.${tag}.timing.json`])
+  return [...subs, ...backups]
 }
 
 function weight(text: string): number {
