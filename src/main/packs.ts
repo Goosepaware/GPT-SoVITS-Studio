@@ -112,7 +112,8 @@ export const PACKS: PackDef[] = [
     repo: 'FunAudioLLM/SenseVoiceSmall',
     targetDir: 'models/asr/SenseVoiceSmall',
     files: [
-      { rel: 'model.pt', size: 936291369, sha256: '833ca2dcfdf8ec91' },
+      // TODO: add the full 64-char sha256 once known; verified by size only for now.
+      { rel: 'model.pt', size: 936291369 },
       { rel: 'config.yaml', size: 1855 },
       { rel: 'configuration.json', size: 396 },
       { rel: 'am.mvn', size: 11203 },
@@ -250,7 +251,13 @@ async function fetchTo(url: string, local: string, remote: PackFile, onProgress:
   if (remote.size && fs.statSync(part).size !== remote.size) throw new Error(`大小不符（应为 ${remote.size} 字节）`)
   const sha = expectedSha(remote)
   if (sha) {
-    const hash = crypto.createHash('sha256').update(fs.readFileSync(part)).digest('hex')
+    const hash = await new Promise<string>((resolve, reject) => {
+      const h = crypto.createHash('sha256')
+      fs.createReadStream(part)
+        .on('data', (c) => h.update(c))
+        .on('error', reject)
+        .on('end', () => resolve(h.digest('hex')))
+    })
     if (hash !== sha) {
       fs.rmSync(part)
       throw new Error('校验失败（sha256 不匹配），已删除文件')

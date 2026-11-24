@@ -5,9 +5,14 @@ import path from 'node:path'
 import { ffmpegPath, getDuration, run } from './media'
 import { readWav, writeWav } from './segmentEdit'
 
-async function ff(engineRoot: string, args: string[], what: string): Promise<void> {
+/** 3x duration + 10 min; 2 h when the duration is unknown. */
+function mediaTimeout(durationSec: number): number {
+  return durationSec > 0 ? Math.round((durationSec * 3 + 600) * 1000) : 2 * 3600 * 1000
+}
+
+async function ff(engineRoot: string, args: string[], what: string, timeoutMs = 20 * 60 * 1000): Promise<void> {
   const bin = ffmpegPath(engineRoot)
-  const r = await run(bin, ['-y', '-hide_banner', '-loglevel', 'error', ...args], 20 * 60 * 1000)
+  const r = await run(bin, ['-y', '-hide_banner', '-loglevel', 'error', ...args], timeoutMs)
   if (r.code !== 0) throw new Error(`${what}失败: ${r.stderr.slice(-600)}`)
 }
 
@@ -119,7 +124,7 @@ export async function mixDub(
   fs.mkdirSync(tempDir, { recursive: true })
   const decode = async (src: string, name: string): Promise<Float32Array> => {
     const out = path.join(tempDir, `${name}.wav`)
-    await ff(engineRoot, ['-i', src, '-vn', '-ac', '2', '-ar', String(rate), '-c:a', 'pcm_s16le', out], '解码音频')
+    await ff(engineRoot, ['-i', src, '-vn', '-ac', '2', '-ar', String(rate), '-c:a', 'pcm_s16le', out], '解码音频', mediaTimeout(total))
     return toStereo(readWav(out))
   }
 
@@ -163,9 +168,9 @@ export async function mixDub(
 
   try {
     if (/\.(mp4|mkv|mov|webm)$/i.test(outputPath)) {
-      await ff(engineRoot, ['-i', base, '-i', mixedPath, '-map', '0:v?', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-shortest', outputPath], '混音')
+      await ff(engineRoot, ['-i', base, '-i', mixedPath, '-map', '0:v?', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-shortest', outputPath], '混音', mediaTimeout(total))
     } else {
-      await ff(engineRoot, ['-i', mixedPath, '-c:a', 'pcm_s16le', outputPath], '混音')
+      await ff(engineRoot, ['-i', mixedPath, '-c:a', 'pcm_s16le', outputPath], '混音', mediaTimeout(total))
     }
   } finally {
     for (const name of fs.readdirSync(tempDir)) {

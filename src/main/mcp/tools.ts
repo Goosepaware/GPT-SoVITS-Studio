@@ -14,7 +14,7 @@ import {
   type Voice
 } from '@shared/types'
 import { hasTiming, timingPathFor, writeSubtitles } from '../subtitles'
-import { alignSentences, buildBilingualSrt, burnSubtitles, parseSubtitleFile, splitLongCues, writeAss, type BiCue } from '../burn'
+import { alignSentences, buildBilingualSrt, burnSubtitles, parseSubtitleFile, sidecarPath, splitLongCues, writeAss, type BiCue } from '../burn'
 
 type Json = Record<string, unknown>
 
@@ -22,6 +22,8 @@ type Json = Record<string, unknown>
 export interface ToolHost {
   version: string
   config: () => AppConfig
+  /** App data root (voices, history, temp). MCP may always write here. */
+  dataDir: string
   status: () => Json
   models: () => ModelCatalog
   voices: () => Voice[]
@@ -83,8 +85,13 @@ interface Job {
   result?: unknown
   error?: string
   cancelRequested: boolean
+  /** True when the tool runs on the TTS worker and can be stopped via cancelTts. */
+  usesTts: boolean
   promise: Promise<void>
 }
+
+/** Tools whose work runs on the TTS worker (cancellable via host.cancelTts). */
+const TTS_TOOLS = new Set(['synthesize', 'synthesize_script', 'preview_segments'])
 
 interface ToolDef {
   name: string
@@ -209,7 +216,6 @@ export class McpTools {
         const key = `${job.status}|${job.progress || ''}|${job.percent ?? ''}`
         const now = Date.now()
         if (!force && (key === lastKey || now - lastSent < 150)) return
-        if (key === lastKey && !force) return
         lastKey = key
         lastSent = now
         ctx.onProgress!(progressOf(job))
@@ -235,7 +241,7 @@ export class McpTools {
   /** Cancel a job by id (used for MCP notifications/cancelled). */
   cancel(jobId: string): boolean {
     const job = this.jobs.get(jobId)
-    if (!job || job.status !== 'running') return false
+    if (!job || job.status !== 'running' || !job.usesTts) return false
     job.cancelRequested = true
     this.host.cancelTts()
     return true
@@ -245,16 +251,16 @@ export class McpTools {
 
   private startJob(def: ToolDef, args: Json): Job {
     const id = `job-${Date.now().toString(36)}-${(++this.seq).toString(36)}`
-    const job: Job = { id, tool: def.name, status: 'running', createdAt: Date.now(), cancelRequested: false, promise: Promise.resolve() }
+    const job: Job = { id, tool: def.name, status: 'running', createdAt: Date.now(), cancelRequested: false, usesTts: TTS_TOOLS.has(def.name), promise: Promise.resolve() }
     job.promise = def
       .run(args, job)
       .then((result) => {
         job.result = result
-        job.status = job.cancelRequested ? 'cancelled' : 'done'
+        job.status = job.cancelRequested && job.usesTts ? 'cancelled' : 'done'
       })
       .catch((error) => {
         job.error = error instanceof Error ? error.message : String(error)
-        job.status = job.cancelRequested ? 'cancelled' : 'error'
+        job.status = job.cancelRequested && job.usesTts ? 'cancelled' : 'error'
       })
       .finally(() => {
         job.finishedAt = Date.now()
@@ -287,13 +293,80 @@ export class McpTools {
 
   // --------------------------------------------------------------- helpers
 
+  /**
+   * Write check: always allowed under outputDir / dataDir / allowlist; never over an input,
+   * never an executable/script extension, never inside system or install folders.
+   */
+  private checkWrite(p: string, inputs: string[] = []): string {
+    if (!p) throw new Error('path is required')
+    const abs = path.resolve(p)
+    const c = this.host.config()
+    const cfg = { outputDir: c.outputDir, dataDir: this.host.dataDir, engineRoot: c.engineRoot, mcp: c.mcp }
+    const hint = `Write under ${cfg.outputDir || 'the app output folder'} or ask the user to add the folder to the MCP path allowlist.`
+    if (/\.(exe|dll|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|hta|lnk|msi|scr|com|reg)$/i.test(abs)) {
+      throw new Error(`outputPath not writable (blocked extension): ${abs}`)
+    }
+    const lower = abs.toLowerCase()
+    for (const inp of inputs) {
+      if (inp && path.resolve(inp).toLowerCase() === lower) throw new Error(`outputPath must differ from the input file: ${abs}`)
+    }
+    const blocked = [process.env.WINDIR, process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.ProgramData, cfg.engineRoot, path.dirname(process.execPath)]
+    if (blocked.some((root) => root && this.within(root, abs))) throw new Error(`outputPath not writable (system/app folder): ${abs}. ${hint}`)
+    const roots = [cfg.outputDir, cfg.dataDir, ...cfg.mcp.pathAllowlist].filter((x): x is string => !!x)
+    if (!roots.some((root) => this.within(root, abs))) throw new Error(`outputPath not writable: ${abs}. ${hint}`)
+    return abs
+  }
+
+  private realish(x: string): string {
+    let cur = x
+    const tail: string[] = []
+    while (!fs.existsSync(cur)) {
+      const parent = path.dirname(cur)
+      if (parent === cur) return x
+      tail.unshift(path.basename(cur))
+      cur = parent
+    }
+    try {
+      return path.join(fs.realpathSync.native(cur), ...tail)
+    } catch {
+      return x
+    }
+  }
+
+  private within(root: string, target: string): boolean {
+    const rel = path.relative(this.realish(path.resolve(root)).toLowerCase(), this.realish(path.resolve(target)).toLowerCase())
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
+  }
+
+  /** Read check: unrestricted when the allowlist is empty. */
   private checkPath(p: string): string {
     if (!p) throw new Error('path is required')
     const abs = path.resolve(p)
     const allow = this.host.config().mcp.pathAllowlist
-    if (allow.length && !allow.some((root) => abs.toLowerCase().startsWith(path.resolve(root).toLowerCase()))) {
-      throw new Error(`Path not in allowlist: ${abs}`)
+    if (!allow.length) return abs
+    // Resolve junctions/symlinks on the deepest existing ancestor, then compare by path.relative
+    // so 'D:\\out' does not match 'D:\\out-evil'.
+    const real = (x: string): string => {
+      let cur = x
+      const tail: string[] = []
+      while (!fs.existsSync(cur)) {
+        const parent = path.dirname(cur)
+        if (parent === cur) return x
+        tail.unshift(path.basename(cur))
+        cur = parent
+      }
+      try {
+        return path.join(fs.realpathSync.native(cur), ...tail)
+      } catch {
+        return x
+      }
     }
+    const target = real(abs).toLowerCase()
+    const inside = allow.some((root) => {
+      const rel = path.relative(real(path.resolve(root)).toLowerCase(), target)
+      return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
+    })
+    if (!inside) throw new Error(`Path not in allowlist: ${abs}`)
     return abs
   }
 
@@ -334,7 +407,7 @@ export class McpTools {
   private async synthOne(a: Json, extra: { outputDir?: string; fileName?: string; voice?: string; formats?: SubtitleFormat[] } = {}): Promise<Json> {
     const options = this.buildSynth(a, extra.voice)
     const dir = str(a.outputDir) || extra.outputDir
-    const out = dir ? uniquePath(this.checkPath(dir), sanitize(str(a.fileName) || extra.fileName || String(options.text))) : undefined
+    const out = dir ? uniquePath(this.checkWrite(dir), sanitize(str(a.fileName) || extra.fileName || String(options.text))) : undefined
     const r = await this.host.synthesize(options, out)
     const own = this.formats(a.subtitleFormats)
     const fmts = own.length ? own : extra.formats || []
@@ -482,7 +555,7 @@ export class McpTools {
         run: async (a, job) => {
           const lines = Array.isArray(a.lines) ? (a.lines as Json[]) : []
           if (!lines.length) throw new Error('lines is empty')
-          const outputDir = this.checkPath(String(a.outputDir || ''))
+          const outputDir = this.checkWrite(String(a.outputDir || ''))
           fs.mkdirSync(outputDir, { recursive: true })
           const shared = (a.params && typeof a.params === 'object' ? a.params : {}) as Json
           const defaults: Json = {
@@ -573,7 +646,7 @@ export class McpTools {
           const audio = this.checkPath(String(a.audioPath || ''))
           if (!hasTiming(audio)) throw new Error(`No timeline: ${timingPathFor(audio)}`)
           const fmts = this.formats(a.formats)
-          const dir = str(a.outputDir) ? this.checkPath(String(a.outputDir)) : undefined
+          const dir = str(a.outputDir) ? this.checkWrite(String(a.outputDir)) : undefined
           return { files: writeSubtitles(audio, fmts.length ? fmts : [h.config().subtitle.defaultFormat], h.config().subtitle, dir) }
         }
       },
@@ -693,7 +766,9 @@ export class McpTools {
           }))
           const bedPath = a.bedPath ? this.checkPath(String(a.bedPath)) : undefined
           const bgm = a.bgm === 'keep' || a.bgm === 'remove' || a.bgm === 'duck' ? a.bgm : a.bgm === 'replace' || bedPath ? 'replace' : 'duck'
-          const out = await h.dub.mix(this.checkPath(String(a.basePath || '')), items, this.checkPath(String(a.outputPath || '')), bgm, bedPath)
+          const basePath = this.checkPath(String(a.basePath || ''))
+          const mixOut = this.checkWrite(String(a.outputPath || ''), [basePath, bedPath || '', ...items.map((x) => String(x.audioPath || ''))])
+          const out = await h.dub.mix(basePath, items, mixOut, bgm, bedPath)
           return { outputPath: out, lines: items.length, bgm }
         }
       },
@@ -731,7 +806,7 @@ export class McpTools {
           const r = alignSentences(items, sentences)
           let scriptPath: string | undefined
           if (str(a.outputDir)) {
-            const dir = this.checkPath(String(a.outputDir))
+            const dir = this.checkWrite(String(a.outputDir))
             fs.mkdirSync(dir, { recursive: true })
             scriptPath = path.join(dir, 'script.json')
             fs.writeFileSync(scriptPath, JSON.stringify(r, null, 1), 'utf-8')
@@ -807,13 +882,14 @@ export class McpTools {
             secondarySize: Number(a.secondarySize) || undefined,
             font: str(a.font)
           }
-          const outputPath = this.checkPath(String(a.outputPath || ''))
+          const outputPath = this.checkWrite(String(a.outputPath || ''), [String(a.videoPath || ''), typeof a.primary === 'string' ? a.primary : '', typeof a.secondary === 'string' ? a.secondary : ''])
           if (a.assOnly === true) {
-            const stem = outputPath.replace(/\.[^.\\/]+$/, '')
             fs.mkdirSync(path.dirname(outputPath), { recursive: true })
-            await writeAss(h.config().engineRoot, this.checkPath(String(a.videoPath || '')), cues, `${stem}.ass`, style)
-            fs.writeFileSync(`${stem}.bilingual.srt`, buildBilingualSrt(cues), 'utf-8')
-            return { assPath: `${stem}.ass`, srtPath: `${stem}.bilingual.srt`, cues: cues.length }
+            const assPath = sidecarPath(outputPath, '.ass')
+            const srtPath = sidecarPath(outputPath, '.bilingual.srt')
+            await writeAss(h.config().engineRoot, this.checkPath(String(a.videoPath || '')), cues, assPath, style)
+            fs.writeFileSync(srtPath, buildBilingualSrt(cues), 'utf-8')
+            return { assPath, srtPath, cues: cues.length }
           }
           const r = await burnSubtitles(h.config().engineRoot, this.checkPath(String(a.videoPath || '')), cues, outputPath, a.mode === 'soft' ? 'soft' : 'hard', style)
           return { ...r, cues: cues.length, paired: cues.filter((c) => c.secondary).length }
@@ -960,11 +1036,8 @@ export class McpTools {
         inputSchema: { type: 'object', required: ['jobId'], properties: { jobId: { type: 'string' } } },
         run: async (a) => {
           const job = this.getJob(a)
-          if (job.status === 'running') {
-            job.cancelRequested = true
-            h.cancelTts()
-          }
-          return this.view(job)
+          const cancelled = this.cancel(job.id)
+          return { ...this.view(job), cancelRequested: cancelled, ...(cancelled || job.status !== 'running' ? {} : { note: 'This job type cannot be cancelled; it will run to completion.' }) }
         }
       },
       {

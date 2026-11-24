@@ -6,6 +6,7 @@ build/
 tools/
 *.log
 __pycache__/
+*.part
 .vite/
 release-old/
 *.tsbuildinfo

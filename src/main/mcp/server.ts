@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import http from 'node:http'
 import { MCP_PROMPTS, type CallContext, type McpTools } from './tools'
 
@@ -33,6 +34,8 @@ export class McpServer {
   private server: http.Server | null = null
   /** request id -> job id, for notifications/cancelled. */
   private inflight = new Map<string, string>()
+  /** Session ids issued by initialize. */
+  private sessions = new Set<string>()
   port = 0
   error?: string
 
@@ -92,8 +95,8 @@ export class McpServer {
       return
     }
     const auth = String(req.headers.authorization || '')
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : url.searchParams.get('token') || ''
-    if (!token || token !== this.getToken()) {
+    const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+    if (!token || !safeEqual(token, this.getToken())) {
       res.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'invalid token' }))
       return
     }
@@ -127,7 +130,19 @@ export class McpServer {
       res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify(rpcError(null, -32700, 'Parse error')))
       return
     }
-    const headers = { 'mcp-session-id': 'gsv' }
+    const sentSession = typeof req.headers['mcp-session-id'] === 'string' ? (req.headers['mcp-session-id'] as string) : ''
+    const isInit = (Array.isArray(msg) ? msg : [msg]).some((m) => m && m.method === 'initialize')
+    let session = sentSession
+    if (isInit) {
+      session = crypto.randomUUID()
+      this.sessions.add(session)
+      if (this.sessions.size > 500) this.sessions.delete(this.sessions.values().next().value as string)
+    } else if (sentSession && !this.sessions.has(sentSession)) {
+      res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify(rpcError(null, -32001, 'Unknown session')))
+      return
+    }
+    // Missing session header is still accepted (older clients).
+    const headers: Record<string, string> = session ? { 'mcp-session-id': session } : {}
     const wantsSse = String(req.headers.accept || '').includes('text/event-stream')
     const single = !Array.isArray(msg) ? msg : null
     const token0 = single?.method === 'tools/call' ? progressToken(single.params) : undefined
@@ -139,7 +154,7 @@ export class McpServer {
       }
       let closed = false
       res.on('close', () => (closed = true))
-      const reply = await this.dispatch(single, (method, params) => !closed && send({ jsonrpc: '2.0', method, params }))
+      const reply = await this.dispatch(single, (method, params) => !closed && send({ jsonrpc: '2.0', method, params }), session)
       if (reply) send(reply)
       res.end()
       return
@@ -150,7 +165,7 @@ export class McpServer {
       res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify(rpcError(null, -32600, 'Empty batch')))
       return
     }
-    const replies = (await Promise.all(list.map((m) => this.dispatch(m)))).filter((r) => r !== null)
+    const replies = (await Promise.all(list.map((m) => this.dispatch(m, undefined, session)))).filter((r) => r !== null)
     if (!replies.length) {
       res.writeHead(202, headers).end()
       return
@@ -160,13 +175,13 @@ export class McpServer {
   }
 
   /** Shared by HTTP and in-process callers. Returns null for notifications. */
-  async dispatch(m: Rpc, notify?: Notify): Promise<unknown | null> {
+  async dispatch(m: Rpc, notify?: Notify, session = ''): Promise<unknown | null> {
     if (!m || typeof m !== 'object' || m.jsonrpc !== '2.0' || typeof m.method !== 'string') {
       return m && m.id !== undefined && m.id !== null ? rpcError(m.id, -32600, 'Invalid Request') : null
     }
     const isNotification = m.id === undefined || m.id === null
     try {
-      const result = await this.method(m.method, m.params || {}, isNotification ? undefined : m.id!, notify)
+      const result = await this.method(m.method, m.params || {}, isNotification ? undefined : m.id!, notify, session)
       return isNotification ? null : { jsonrpc: '2.0', id: m.id, result }
     } catch (error) {
       if (isNotification) return null
@@ -175,7 +190,7 @@ export class McpServer {
     }
   }
 
-  private async method(name: string, p: Record<string, unknown>, id: string | number | undefined, notify?: Notify): Promise<unknown> {
+  private async method(name: string, p: Record<string, unknown>, id: string | number | undefined, notify?: Notify, session = ''): Promise<unknown> {
     switch (name) {
       case 'initialize': {
         const asked = typeof p.protocolVersion === 'string' ? p.protocolVersion : ''
@@ -191,7 +206,7 @@ export class McpServer {
       case 'logging/setLevel':
         return {}
       case 'notifications/cancelled': {
-        const jobId = this.inflight.get(String(p.requestId))
+        const jobId = this.inflight.get(`${session}|${String(p.requestId)}`)
         if (jobId) this.tools.cancel(jobId)
         return {}
       }
@@ -201,7 +216,7 @@ export class McpServer {
         const toolName = String(p.name || '')
         const args = (p.arguments && typeof p.arguments === 'object' ? p.arguments : {}) as Record<string, unknown>
         const tok = progressToken(p)
-        const key = id === undefined ? '' : String(id)
+        const key = id === undefined ? '' : `${session}|${String(id)}`
         const ctx: CallContext = {
           onJob: (jobId) => key && this.inflight.set(key, jobId),
           onProgress:
@@ -236,6 +251,13 @@ export class McpServer {
         throw Object.assign(new Error(`Method not found: ${name}`), { code: -32601 })
     }
   }
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a, 'utf8')
+  const y = Buffer.from(b || '', 'utf8')
+  if (!y.length || x.length !== y.length) return false
+  return crypto.timingSafeEqual(x, y)
 }
 
 function progressToken(p?: Record<string, unknown>): string | number | undefined {

@@ -12,9 +12,33 @@ export function ffprobePath(engineRoot: string): string {
   return path.join(engineRoot, 'runtime', 'ffprobe.exe')
 }
 
-export function run(command: string, args: string[], timeoutMs = 0): Promise<{ code: number; stdout: string; stderr: string }> {
+const activeProcs = new Set<number>()
+
+/** Kill every child started through run() (ffmpeg/ffprobe). Called on app quit. */
+export function killAllRuns(): void {
+  for (const pid of activeProcs) {
+    try {
+      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true })
+    } catch {
+      // ignore
+    }
+  }
+  activeProcs.clear()
+}
+
+export function run(
+  command: string,
+  args: string[],
+  timeoutMs = 0,
+  opts: { cwd?: string } = {}
+): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const proc = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    const proc = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], cwd: opts.cwd })
+    const pid = proc.pid
+    if (pid) activeProcs.add(pid)
+    proc.once('exit', () => {
+      if (pid) activeProcs.delete(pid)
+    })
     let stdout = ''
     let stderr = ''
     let done = false
@@ -58,7 +82,7 @@ export async function getDuration(engineRoot: string, file: string): Promise<num
     '-of',
     'default=noprint_wrappers=1:nokey=1',
     file
-  ])
+  ], 30_000)
   const value = Number.parseFloat(result.stdout.trim())
   return Number.isFinite(value) ? value : 0
 }

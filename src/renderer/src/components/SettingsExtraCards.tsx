@@ -167,7 +167,7 @@ export function AiConnectCard({
         </div>
       </div>
       <label className="field">
-        <span className="field-label">路径白名单 <em>每行一个目录；留空 = 不限制 agent 可访问的路径</em></span>
+        <span className="field-label">路径白名单 <em>每行一个目录。留空：可读取任意位置，只能写入输出目录和数据目录；需要写入其他目录时把文件夹加入白名单</em></span>
         <textarea
           rows={2}
           value={m.pathAllowlist.join('\n')}

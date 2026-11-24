@@ -114,6 +114,10 @@ export class PythonWorker extends EventEmitter {
       stdio: ['pipe', 'pipe', 'pipe']
     })
     this.proc = proc
+    // EPIPE after the child dies arrives asynchronously; without a listener it crashes the main process.
+    proc.stdin.on('error', (error) => {
+      this.writeLog(`stdin error: ${error.message}`)
+    })
     proc.stdout.setEncoding('utf8')
     const stdout = readline.createInterface({ input: proc.stdout })
     stdout.on('line', (line) => this.handleStdout(line))
@@ -217,10 +221,22 @@ export class PythonWorker extends EventEmitter {
       const timer = setTimeout(() => {
         this.pending.delete(id)
         reject(new Error(`任务超时（${Math.round(timeoutMs / 1000)} 秒）`))
+        // Stop the GPU work too, otherwise the next queued job runs concurrently.
+        this.send('cancel', { id })
+        setTimeout(() => {
+          if (this.proc === proc && this.pending.size === 0) {
+            void this.unload('任务超时，已释放模型').catch(() => undefined)
+          }
+        }, 10_000)
       }, timeoutMs)
       this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer })
       try {
-        proc.stdin.write(message)
+        proc.stdin.write(message, (error) => {
+          if (!error || !this.pending.has(id)) return
+          clearTimeout(timer)
+          this.pending.delete(id)
+          reject(error)
+        })
       } catch (error) {
         clearTimeout(timer)
         this.pending.delete(id)

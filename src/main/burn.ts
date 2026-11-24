@@ -1,7 +1,35 @@
 /** Bilingual subtitles: ASS generation, SRT/VTT parsing, sentence alignment, hard/soft muxing (ffmpeg + libass). */
+import crypto from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import { ffmpegPath, ffprobePath, run } from './media'
+import { ffmpegPath, ffprobePath, getDuration, run } from './media'
+
+/** ffmpeg timeout for a full pass over a media file: 3x duration + 10 min, or 2 h if unknown. */
+export function longRunTimeout(durationSec: number): number {
+  return durationSec > 0 ? Math.round((durationSec * 3 + 600) * 1000) : 2 * 3600 * 1000
+}
+
+let encoderCache: { ffmpeg: string; list: Set<string> } | null = null
+async function availableEncoders(ffmpeg: string): Promise<Set<string> | null> {
+  if (encoderCache?.ffmpeg === ffmpeg) return encoderCache.list
+  const r = await run(ffmpeg, ['-hide_banner', '-encoders'], 30_000)
+  if (r.code !== 0) return null
+  const list = new Set<string>()
+  for (const line of r.stdout.split(/\r?\n/)) {
+    const m = /^\s*[VAS][.A-Z]{5}\s+(\S+)/.exec(line)
+    if (m) list.add(m[1])
+  }
+  encoderCache = { ffmpeg, list }
+  return list
+}
+
+/** Sidecar path next to the output that never clobbers an existing user file. */
+export function sidecarPath(outputPath: string, ext: string): string {
+  const stem = outputPath.replace(/\.[^.\\/]+$/, '')
+  const p = stem + ext
+  return fs.existsSync(p) ? `${stem}.studio${ext}` : p
+}
 
 export interface BiCue {
   start: number
@@ -28,7 +56,7 @@ export interface SubStyle {
 
 /** Frame size of a video (for sizing subtitles relative to the real resolution). */
 async function probeSize(engineRoot: string, video: string): Promise<{ width: number; height: number }> {
-  const r = await run(ffprobePath(engineRoot), ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0:s=x', video])
+  const r = await run(ffprobePath(engineRoot), ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0:s=x', video], 30_000)
   const m = /^(\d+)x(\d+)/.exec((r.stdout || '').trim())
   return m ? { width: Number(m[1]), height: Number(m[2]) } : { width: 1920, height: 1080 }
 }
@@ -170,11 +198,12 @@ function ts(t: number): string {
 }
 
 function assText(s: string): string {
-  return s.replace(/[{}]/g, '').replace(/\r?\n/g, '\\N').trim()
+  // A word joiner after each user backslash stops libass from reading \N, \h, \n as escapes.
+  return s.replace(/[{}]/g, '').replace(/\\/g, '\\\u2060').replace(/\r?\n/g, '\\N').trim()
 }
 
 export function buildAss(cues: BiCue[], style: SubStyle = {}): string {
-  const font = style.font || 'Microsoft YaHei'
+  const font = (style.font || '').replace(/[,\r\n]/g, ' ').trim() || 'Microsoft YaHei'
   const resY = style.playResY || 1080
   const resX = style.playResX || Math.round((resY * 16) / 9)
   // Sizes scale with the frame so 360p previews and 1080p exports look the same.
@@ -262,10 +291,6 @@ export function parseSubtitleFile(file: string): { start: number; end: number; t
   return out
 }
 
-function filterPath(p: string): string {
-  return p.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'")
-}
-
 /**
  * Put subtitles on a video. hard = burn with libass (re-encode: h264_nvenc, fallback libx264/mpeg4);
  * soft = add a subtitle track (mkv: ass, mp4: mov_text), no re-encode.
@@ -282,33 +307,61 @@ export async function burnSubtitles(
   if (!cues.length) throw new Error('没有字幕内容')
   if (path.resolve(video) === path.resolve(outputPath)) throw new Error('outputPath 不能与输入视频相同')
   fs.mkdirSync(path.dirname(outputPath), { recursive: true })
-  const assPath = outputPath.replace(/\.[^.\\/]+$/, '') + '.ass'
+  const assPath = sidecarPath(outputPath, '.ass')
   const size = await probeSize(engineRoot, video)
-  fs.writeFileSync(assPath, buildAss(cues, { ...style, playResX: size.width, playResY: size.height }), 'utf-8')
+  const assBody = buildAss(cues, { ...style, playResX: size.width, playResY: size.height })
+  fs.writeFileSync(assPath, assBody, 'utf-8')
   const bitrate = size.height >= 1080 ? '12M' : size.height >= 720 ? '6M' : '3M'
   const ffmpeg = ffmpegPath(engineRoot)
   const base = ['-y', '-hide_banner', '-loglevel', 'error']
+  const timeout = longRunTimeout(await getDuration(engineRoot, video))
+  const dropPartial = (): void => {
+    try {
+      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath)
+    } catch {
+      // ignore
+    }
+  }
 
   if (mode === 'soft') {
     const mkv = /\.mkv$/i.test(outputPath)
-    const r = await run(ffmpeg, [...base, '-i', video, '-i', assPath, '-map', '0:v?', '-map', '0:a?', '-map', '1:0', '-c:v', 'copy', '-c:a', 'copy', '-c:s', mkv ? 'ass' : 'mov_text', outputPath])
-    if (r.code !== 0) throw new Error(`封装字幕失败: ${r.stderr.slice(-600)}`)
+    const r = await run(ffmpeg, [...base, '-i', video, '-i', assPath, '-map', '0:v?', '-map', '0:a?', '-map', '1:0', '-c:v', 'copy', '-c:a', 'copy', '-c:s', mkv ? 'ass' : 'mov_text', outputPath], timeout)
+    if (r.code !== 0) {
+      dropPartial()
+      throw new Error(`封装字幕失败: ${r.stderr.slice(-600)}`)
+    }
     return { outputPath, assPath, encoder: 'copy' }
   }
 
-  const vf = `subtitles='${filterPath(assPath)}'`
-  // The bundled ffmpeg's NVENC is too old for current drivers ("unsupported param"), and it has no
-  // libx264, so MediaFoundation H.264 is the working GPU/OS encoder; mpeg4 is the last resort.
-  const tries: [string, string[]][] = [
+  // libass filter-path escaping breaks on drive colons, quotes and non-ASCII; run from an ASCII temp dir instead.
+  const tmp = path.join(os.tmpdir(), `gsv-burn-${crypto.randomBytes(6).toString('hex')}`)
+  fs.mkdirSync(tmp, { recursive: true })
+  fs.writeFileSync(path.join(tmp, 'sub.ass'), assBody, 'utf-8')
+  const vf = 'subtitles=sub.ass'
+  // The bundled ffmpeg's NVENC is too old for current drivers, so MediaFoundation H.264 is the working
+  // GPU/OS encoder; libx264 only if this build has it; mpeg4 is the last resort.
+  const all: [string, string[]][] = [
     ['h264_mf', ['-c:v', 'h264_mf', '-b:v', bitrate]],
     ['libx264', ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20']],
     ['mpeg4', ['-c:v', 'mpeg4', '-q:v', '2']]
   ]
-  let last = ''
-  for (const [name, enc] of tries) {
-    const r = await run(ffmpeg, [...base, '-i', video, '-vf', vf, '-map', '0:v', '-map', '0:a?', ...enc, '-pix_fmt', 'yuv420p', '-c:a', 'copy', outputPath])
-    if (r.code === 0) return { outputPath, assPath, encoder: name }
-    last = r.stderr.slice(-600)
+  const have = await availableEncoders(ffmpeg)
+  const tries = have ? all.filter(([n]) => have.has(n)) : all
+  let last = 'no usable video encoder'
+  try {
+    for (const [name, enc] of tries) {
+      const r = await run(
+        ffmpeg,
+        [...base, '-i', path.resolve(video), '-vf', vf, '-map', '0:v', '-map', '0:a?', ...enc, '-pix_fmt', 'yuv420p', '-c:a', 'copy', path.resolve(outputPath)],
+        timeout,
+        { cwd: tmp }
+      )
+      if (r.code === 0) return { outputPath, assPath, encoder: name }
+      last = r.stderr.slice(-600)
+      dropPartial()
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
   }
   throw new Error(`烧录字幕失败: ${last}`)
 }
@@ -376,7 +429,27 @@ export function alignSentences(
     let at = flat.indexOf(key, cursor)
     let len = key.length
     let matched = true
-    if (at < 0 || at - cursor > Math.max(40, key.length * 2)) {
+    const giveUp = (): void => {
+      // Give up on this one but do NOT advance the cursor: a wrong guess would swallow
+      // the sentences after it. Times are filled in from the neighbours below.
+      matched = false
+      unmatched.add(i)
+      const here = tl[Math.min(tl.length - 1, cursor)]
+      lines.push({
+        id: `${idPrefix}${String(lines.length + 1).padStart(3, '0')}`,
+        start: here.t0,
+        end: here.t0,
+        text: s.text.trim(),
+        speaker: s.speaker,
+        items: [here.item],
+        matched: false
+      })
+    }
+    if ((at < 0 || at - cursor > Math.max(40, key.length * 2)) && key.length < 6) {
+      // Short sentences: exact match only; head/tail anchors would mis-hit.
+      giveUp()
+      return
+    } else if (at < 0 || at - cursor > Math.max(40, key.length * 2)) {
       // Transcripts carry ASR errors ("patta pixel" vs "PetaPixel"), so sentences the agent cleaned up
       // will not match exactly. Try head+tail anchoring before giving up.
       const headKey = key.slice(0, Math.min(4, key.length))
@@ -387,20 +460,7 @@ export function alignSentences(
         at = head
         len = tail + tailKey.length - head
       } else {
-        // Give up on this one but do NOT advance the cursor: a wrong guess would swallow
-        // the sentences after it. Times are filled in from the neighbours below.
-        matched = false
-        unmatched.add(i)
-        const here = tl[Math.min(tl.length - 1, cursor)]
-        lines.push({
-          id: `${idPrefix}${String(lines.length + 1).padStart(3, '0')}`,
-          start: here.t0,
-          end: here.t0,
-          text: s.text.trim(),
-          speaker: s.speaker,
-          items: [here.item],
-          matched: false
-        })
+        giveUp()
         return
       }
     }

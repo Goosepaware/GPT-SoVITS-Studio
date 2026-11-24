@@ -91,6 +91,12 @@ node scripts/probe-worker.mjs asr     # 直接测试 ASR worker
 
 - `server.ts`：精简 MCP（Streamable HTTP，JSON-RPC 2.0，POST /mcp），只监听 127.0.0.1，Bearer token 鉴权，
   拒绝浏览器跨域来源。工具错误作为 `isError` 结果返回，不中断服务。
+  - 鉴权只认 `Authorization: Bearer <token>` 请求头（已移除 `?token=` 查询参数），常量时间比较。
+  - 每次 `initialize` 生成新的 `mcp-session-id`；带未知会话头的请求返回 404，缺省会话头仍兼容。
+  - 写入策略：白名单为空时可读任意路径，但只能写入输出目录 / 数据目录；写其他目录需加入白名单。
+    禁止写系统/安装目录和可执行扩展名，输出不得覆盖输入。
+  - `job_cancel` 只对走 TTS worker 的任务（synthesize / synthesize_script / preview_segments）生效。
+  - 超时：ffprobe 30 秒；烧录/封装/配音混音 = 时长×3+600 秒（未知时 2 小时）。
   - 协议版本协商 `2025-06-18` / `2025-03-26` / `2024-11-05`，未知版本回退到最新。
   - `tools/call` 带 `params._meta.progressToken` 且 `Accept: text/event-stream` 时改用 SSE 回复，
     任务状态变化时推送 `notifications/progress`，最后发结果；普通请求仍返回 JSON。
@@ -167,7 +173,7 @@ node $env:TEMP\\seg-test.mjs                                # 分段替换 / 撤
 - 相邻配音行不会重叠：超出下一行起始位置的音频会被截断并加 30ms 淡出。
 - `synthesize_script` 重跑部分行时按 `id` 合并进已有 manifest，不会把其它行清掉；
   `overflow` 报的是行号而不是本次调用的下标。
-- 所有 ffmpeg 调用带 20 分钟超时（`media.ts run()`），超时会 taskkill 并把命令行写进错误信息。
+- ffmpeg 调用默认 20 分钟超时，整片处理按时长放宽（见 MCP 一节）（`media.ts run()`），超时会 taskkill 并把命令行写进错误信息。
 
 ## 人声 / 背景分离
 

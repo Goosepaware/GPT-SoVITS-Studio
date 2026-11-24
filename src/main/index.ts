@@ -17,7 +17,7 @@ import type {
   WorkerEvent
 } from '@shared/types'
 import { loadConfig, saveConfig } from './config'
-import { exportMp3, formatAsrFile, getDuration, mimeForFile, prepareReference } from './media'
+import { exportMp3, formatAsrFile, getDuration, killAllRuns, mimeForFile, prepareReference } from './media'
 import { scanModels } from './models'
 import { getAppPaths, engineMissing, isEngineRoot, type AppPaths } from './paths'
 import { PythonWorker } from './pythonWorker'
@@ -376,9 +376,15 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('shell:open', async (_event, target: string) => {
-    if (fs.existsSync(target)) {
-      await shell.openPath(target)
+    if (typeof target !== 'string' || !fs.existsSync(target)) return
+    const abs = path.resolve(target)
+    if (/\.(exe|bat|cmd|ps1|vbs|js|lnk|msi|scr|com)$/i.test(abs)) return
+    const inside = (root: string): boolean => {
+      const rel = path.relative(path.resolve(root).toLowerCase(), abs.toLowerCase())
+      return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
     }
+    if (![config.outputDir, paths.voicesDir, paths.dataRoot].some((r) => r && inside(r))) return
+    await shell.openPath(abs)
   })
 
   ipcMain.handle('shell:reveal', (_event, target: string) => {
@@ -520,7 +526,11 @@ function registerIpc(): void {
   })
   ipcMain.handle('packs:cancel', (_e, id: string) => cancelPack(id as PackId))
   ipcMain.handle('packs:remove', (_e, id: string) => {
-    removePack(config.engineRoot, id as PackId)
+    try {
+      removePack(config.engineRoot, id as PackId)
+    } catch (error) {
+      throw new Error(`删除失败：${error instanceof Error ? error.message : String(error)}`)
+    }
     return packStatus(config.engineRoot)
   })
   ipcMain.handle('sep:models', () => listSepModels(config.engineRoot))
@@ -532,7 +542,11 @@ function registerIpc(): void {
   })
   ipcMain.handle('sep:cancel-download', (_e, id: string) => cancelSepDownload(id))
   ipcMain.handle('sep:remove', (_e, id: string) => {
-    removeSepModel(config.engineRoot, id)
+    try {
+      removeSepModel(config.engineRoot, id)
+    } catch (error) {
+      throw new Error(`删除失败：${error instanceof Error ? error.message : String(error)}`)
+    }
     return listSepModels(config.engineRoot)
   })
   ipcMain.handle('sep:separate', (_e, src: string, model?: string) => dubOps.separate(src, model))
@@ -901,6 +915,7 @@ function buildToolHost(): ToolHost {
   return {
     version: app.getVersion(),
     config: () => config,
+    dataDir: paths.dataRoot,
     status: () => ({
       tts: ttsWorker?.getStatus() || { state: 'stopped' },
       asr: asrWorker?.getStatus() || { state: 'stopped' },
@@ -1179,6 +1194,12 @@ if (!gotLock) {
     quitting = true
     if (gpuTimer) clearInterval(gpuTimer)
     if (idleTimer) clearInterval(idleTimer)
+    try {
+      cancelSeparation()
+    } catch {
+      // ignore
+    }
+    killAllRuns()
     Promise.allSettled([ttsWorker?.unload('退出应用') || Promise.resolve(), asrWorker?.unload('退出应用') || Promise.resolve()]).finally(() => {
       app.quit()
     })

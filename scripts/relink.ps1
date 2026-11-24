@@ -23,8 +23,13 @@ Get-Process 'GPT-SoVITS-Studio' -ErrorAction SilentlyContinue | Stop-Process -Fo
 Start-Sleep 3
 Start-Process "$app\GPT-SoVITS-Studio.exe"
 Start-Sleep 10
+$port = 39281
 try {
-  $r = Invoke-WebRequest -Uri 'http://127.0.0.1:39281/health' -UseBasicParsing -TimeoutSec 5
+  $cfg = Get-Content "$app\data\config.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ($cfg.mcp.port) { $port = [int]$cfg.mcp.port }
+} catch { }
+try {
+  $r = Invoke-WebRequest -Uri "http://127.0.0.1:$port/health" -UseBasicParsing -TimeoutSec 5
   "BUILD OK, MCP health=$($r.StatusCode)"
 } catch {
   'BUILD OK, but MCP health check failed'
