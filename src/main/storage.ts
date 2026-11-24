@@ -170,7 +170,9 @@ export class Storage {
     for (const entry of stored) {
       if (!removeSet.has(entry.id)) continue
       try {
-        fs.rmSync(absolutePath(this.dataRoot, entry.fileRel), { force: true })
+        const audioAbs = absolutePath(this.dataRoot, entry.fileRel)
+        fs.rmSync(audioAbs, { force: true })
+        fs.rmSync(audioAbs.replace(/\.[^.\\/]+$/, '') + '.timing.json', { force: true })
       } catch {
         // ignore
       }
@@ -214,7 +216,9 @@ export class Storage {
     const stored = readJson<StoredHistory[]>(this.historyFile, [])
     for (const entry of stored) {
       try {
-        fs.rmSync(absolutePath(this.dataRoot, entry.fileRel), { force: true })
+        const audioAbs = absolutePath(this.dataRoot, entry.fileRel)
+        fs.rmSync(audioAbs, { force: true })
+        fs.rmSync(audioAbs.replace(/\.[^.\\/]+$/, '') + '.timing.json', { force: true })
       } catch {
         // ignore
       }

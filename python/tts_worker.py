@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import argparse
 import gc
+import json
 import os
 import random
 import sys
 import time
-import traceback
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,17 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from engine_common import WorkerBase, activate_engine, vram_snapshot  # noqa: E402
+from timing import analyze_segment, detect_flags, to_float_mono  # noqa: E402
+
+FLAG_LABELS = {
+    "silent": "疑似静音",
+    "too_long": "时长偏长（可能重复/拖音）",
+    "too_short": "时长偏短（可能漏字）",
+}
+
+
+def _flag_score(flags: list[str]) -> int:
+    return (10 if "silent" in flags else 0) + len(flags)
 
 
 class TtsWorker(WorkerBase):
@@ -29,6 +40,7 @@ class TtsWorker(WorkerBase):
         self.gpt_path = ""
         self.sovits_path = ""
         self.warmed_up = False
+        self.accel_ok = True
         self._stage_rid: str | None = None
 
     def on_start(self) -> None:
@@ -113,6 +125,7 @@ class TtsWorker(WorkerBase):
         self.gpt_path = gpt_path
         self.sovits_path = sovits_path
         self.warmed_up = False
+        self.accel_ok = True
         self._stage(rid, "load", "模型已就绪", 100)
         status = self.get_status()
         status["state"] = "ready"
@@ -132,6 +145,54 @@ class TtsWorker(WorkerBase):
                 torch.cuda.ipc_collect()
         except Exception:
             pass
+
+    # ------------------------------------------------------------ synthesis
+
+    def _run_one(self, base_inputs: dict[str, Any], text: str, seed: int) -> tuple[Any, int]:
+        """Synthesize exactly one sentence (no further splitting). Returns (float mono, sr)."""
+        import numpy as np
+
+        inputs = dict(base_inputs)
+        inputs.update(
+            {
+                "text": text,
+                "text_split_method": "cut0",
+                "batch_size": 1,
+                "seed": seed,
+                "use_cuda_graph": self.accel_ok,
+                "use_flash_attention": self.accel_ok,
+            }
+        )
+        parts: list[Any] = []
+        sr = 48000
+
+        def go() -> None:
+            nonlocal sr
+            parts.clear()
+            for out_sr, audio in self.tts.run(inputs):
+                sr = out_sr
+                if audio is not None and len(audio) > 0:
+                    parts.append(to_float_mono(audio))
+                if self.cancel_event.is_set():
+                    self.tts.stop_flag = True
+                    break
+
+        try:
+            go()
+        except Exception as exc:
+            msg = str(exc).lower()
+            accel = any(k in msg for k in ("flash", "cuda graph", "cudagraph", "accel", "backend"))
+            if not self.accel_ok or not accel or "out of memory" in msg:
+                raise
+            # Fall back once; following sentences stay in compat mode, nothing restarts.
+            self.proto.log(f"加速后端初始化失败，回退到兼容模式：{exc}")
+            self.accel_ok = False
+            inputs["use_cuda_graph"] = False
+            inputs["use_flash_attention"] = False
+            self.tts.stop_flag = False
+            go()
+        wav = np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+        return wav, sr
 
     def _synthesize(self, command: dict[str, Any]) -> None:
         rid = command.get("id")
@@ -158,22 +219,23 @@ class TtsWorker(WorkerBase):
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         requested_seed = int(command.get("seed", -1))
-        used_seed = requested_seed if requested_seed >= 0 else random.randint(0, 2**32 - 1)
+        used_seed = requested_seed if requested_seed >= 0 else random.randint(0, 2**31 - 1)
         split_method = command.get("splitMethod") or "cut5"
+        speed = float(command.get("speed", 1.0))
+        gap_s = max(0.0, float(command.get("fragmentInterval", 0.3)))
+        max_retries = max(0, int(command.get("maxRetries", 2)))
         self.cancel_event.clear()
         self.tts.stop_flag = False
-        segments = self.tts.text_preprocessor.pre_seg_text(text, text_lang, split_method)
-        total = max(1, len(segments))
+
+        segments = [s for s in self.tts.text_preprocessor.pre_seg_text(text, text_lang, split_method) if s.strip()]
+        if not segments:
+            segments = [text]
+        total = len(segments)
         self._stage(rid, "prepare", "分析参考音频", 2)
         self.tts.set_ref_audio(ref_path)
-        self._stage(rid, "split", f"文本已切分：{total} 段", 6, "；".join(s[:24] for s in segments[:4]))
-        if self.cancel_event.is_set():
-            self.proto.cancelled(rid)
-            self.proto.status("ready", self.model_names())
-            return
+        self._stage(rid, "split", f"文本已切分：{total} 句", 6, "；".join(s[:24] for s in segments[:4]))
 
-        inputs = {
-            "text": text,
+        base_inputs = {
             "text_lang": text_lang,
             "ref_audio_path": ref_path,
             "prompt_text": prompt_text,
@@ -181,98 +243,128 @@ class TtsWorker(WorkerBase):
             "top_k": int(command.get("topK", 15)),
             "top_p": float(command.get("topP", 1.0)),
             "temperature": float(command.get("temperature", 1.0)),
-            "text_split_method": split_method,
-            "batch_size": max(1, int(command.get("batchSize", 1))),
             "batch_threshold": 0.75,
             "split_bucket": False,
-            "speed_factor": float(command.get("speed", 1.0)),
-            "fragment_interval": float(command.get("fragmentInterval", 0.3)),
-            "seed": used_seed,
+            "speed_factor": speed,
+            "fragment_interval": 0.0,
             "parallel_infer": bool(command.get("parallelInfer", True)),
             "repetition_penalty": float(command.get("repetitionPenalty", 1.35)),
             "sample_steps": int(command.get("sampleSteps", 4)),
-            "return_fragment": True,
+            "return_fragment": False,
             "streaming_mode": False,
-            "use_cuda_graph": True,
-            "use_flash_attention": True,
         }
         if not self.warmed_up:
             self._stage(rid, "warmup", "首次生成：编译加速后端", 8, "首次约 15–50 秒，之后会明显加快")
         else:
             self._stage(rid, "warmup", "初始化推理", 8)
 
-        chunks: list[np.ndarray] = []
-        sample_rate = 48000
-        batch_size = int(inputs["batch_size"])
         started = time.time()
+        sample_rate = 48000
+        pieces: list[Any] = []
+        timeline: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        cursor = 0  # in samples
 
-        def generate() -> tuple[list[np.ndarray], int]:
-            local_chunks: list[np.ndarray] = []
-            local_done = 0
-            nonlocal sample_rate
-            for sr, audio in self.tts.run(inputs):
-                sample_rate = sr
-                if self.cancel_event.is_set():
-                    self.tts.stop_flag = True
-                if audio is not None and len(audio) > 0:
-                    local_chunks.append(audio)
-                    local_done = min(total, local_done + batch_size)
-                    detail = segments[local_done - 1][:42] if local_done - 1 < len(segments) else None
-                    self.proto.progress(rid, local_done, total, f"第 {local_done}/{total} 段", detail)
-                    self.proto.stage(
-                        rid,
-                        "synthesize",
-                        f"合成中 · {local_done}/{total} 段",
-                        8 + (local_done / total) * 86,
-                        f"已生成 {sum(len(c) for c in local_chunks) / float(sr):.1f} 秒音频",
-                    )
-                if self.cancel_event.is_set():
-                    break
-            return local_chunks, local_done
-
-        try:
-            chunks, done = generate()
-        except Exception as exc:
-            # The first generation may fail on an unsupported acceleration
-            # backend.  Retry once with CUDA Graph / FlashAttention disabled.
-            message = str(exc).lower()
-            acceleration_error = any(k in message for k in ("flash", "cuda graph", "cudagraph", "accel", "backend"))
-            oom = "out of memory" in message
-            if acceleration_error and not oom:
-                self.proto.log(f"加速后端初始化失败，回退到兼容模式：{exc}")
-                inputs["use_cuda_graph"] = False
-                inputs["use_flash_attention"] = False
-                self.tts.stop_flag = False
-                self.cancel_event.clear()
-                self._stage(rid, "compat", "加速后端不兼容，切换兼容模式", 8)
-                chunks, done = generate()
-            else:
-                raise
-
-        if self.cancel_event.is_set():
+        def handle_cancel() -> bool:
+            if not self.cancel_event.is_set():
+                return False
             self.tts.stop_flag = False
             self.proto.cancelled(rid)
             self.proto.status("ready", self.model_names(), "已停止生成")
-            return
-        if not chunks:
-            raise RuntimeError("没有生成任何音频，请检查参考音频和文本。")
+            return True
 
-        audio = np.concatenate(chunks, axis=0)
-        # Some versions return float; normalize safely to 16-bit PCM.
-        if audio.dtype != np.int16:
-            audio = np.clip(audio, -1.0, 1.0)
-            audio = (audio * 32767.0).astype(np.int16)
-        sf.write(output_path, audio, sample_rate, subtype="PCM_16")
-        duration = len(audio) / float(sample_rate)
-        self.warmed_up = True
+        for i, seg in enumerate(segments):
+            if handle_cancel():
+                return
+            seed = (used_seed + i) % (2**31)
+            attempt = 0
+            best: tuple[Any, dict[str, Any], list[str], int, int] | None = None
+            while True:
+                self.proto.progress(rid, i, total, f"第 {i + 1}/{total} 句", seg[:42])
+                label = f"合成中 · {i + 1}/{total} 句" + (f"（重试 {attempt}）" if attempt else "")
+                self._stage(rid, "synthesize", label, 8 + (i / total) * 86, seg[:42])
+                wav, sr = self._run_one(base_inputs, seg, seed)
+                if self.cancel_event.is_set():
+                    break
+                sample_rate = sr
+                info = analyze_segment(wav, sr)
+                flags = detect_flags(info, seg, speed)
+                if best is None or _flag_score(flags) < _flag_score(best[2]):
+                    best = (wav, info, flags, seed, attempt)
+                if not flags or attempt >= max_retries:
+                    break
+                attempt += 1
+                seed = random.randint(0, 2**31 - 1)
+            if handle_cancel():
+                return
+            assert best is not None
+            wav, info, flags, seed, _ = best
+            self.warmed_up = True
+
+            if info["silent"]:
+                clip = np.zeros(int(0.2 * sample_rate), dtype=np.float32)
+                v0, v1 = 0.0, len(clip) / sample_rate
+            else:
+                clip = wav[info["trim_start"]: info["trim_end"]]
+                v0, v1 = info["voiced_start"], info["voiced_end"]
+
+            if pieces and gap_s > 0:
+                gap = np.zeros(int(gap_s * sample_rate), dtype=np.float32)
+                pieces.append(gap)
+                cursor += len(gap)
+            start = cursor / sample_rate
+            pieces.append(clip)
+            cursor += len(clip)
+            timeline.append(
+                {
+                    "index": i,
+                    "text": seg.strip(),
+                    "start": round(start, 3),
+                    "end": round(cursor / sample_rate, 3),
+                    "voicedStart": round(start + v0, 3),
+                    "voicedEnd": round(start + v1, 3),
+                    "pauses": [round(start + p, 3) for p in info["pauses"]],
+                    "seed": seed,
+                    "retries": attempt,
+                    "flags": flags,
+                }
+            )
+            if flags:
+                reason = "、".join(FLAG_LABELS.get(f, f) for f in flags)
+                warnings.append(f"第 {i + 1} 句{reason}" + (f"，已重试 {attempt} 次" if attempt else ""))
+            self.proto.progress(rid, i + 1, total, f"第 {i + 1}/{total} 句", seg[:42])
+
+        if all("silent" in t["flags"] for t in timeline):
+            raise RuntimeError("没有生成任何有效音频（全部静音），请检查参考音频、文本或参数。")
+
+        audio = np.concatenate(pieces)
+        peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+        if peak > 0.99:
+            # Scale down instead of hard clipping to avoid distortion.
+            audio = audio * (0.98 / peak)
+        pcm = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16)
+        sf.write(output_path, pcm, sample_rate, subtype="PCM_16")
+        duration = len(pcm) / float(sample_rate)
+
+        timing_path = os.path.splitext(output_path)[0] + ".timing.json"
+        with open(timing_path, "w", encoding="utf-8") as fh:
+            json.dump(
+                {"version": 1, "sampleRate": sample_rate, "duration": round(duration, 3), "seed": used_seed, "segments": timeline},
+                fh,
+                ensure_ascii=False,
+                indent=1,
+            )
+
         self._stage(rid, "done", "生成完成", 100, f"{duration:.2f} 秒")
         result = {
             "filePath": output_path,
+            "timingPath": timing_path,
             "duration": round(duration, 3),
             "sampleRate": sample_rate,
             "segments": total,
             "elapsed": round(time.time() - started, 2),
             "seed": used_seed,
+            "warnings": warnings,
         }
         self.proto.status("ready", self.model_names(), None, vram_snapshot(torch))
         self.proto.result(rid, result)

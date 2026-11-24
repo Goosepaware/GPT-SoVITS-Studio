@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import {
   AlertCircle,
   AudioWaveform,
+  Captions,
   Check,
   ChevronDown,
   Clock3,
@@ -22,7 +23,7 @@ import {
   Wand2,
   X
 } from 'lucide-react'
-import type { Bootstrap, EngineStatus, HistoryEntry, ReferenceTransfer, TtsResult, Voice, WorkerEvent } from '@shared/types'
+import type { Bootstrap, EngineStatus, HistoryEntry, ReferenceTransfer, SubtitleFormat, TtsResult, Voice, WorkerEvent } from '@shared/types'
 import { AudioPlayer } from '../components/AudioPlayer'
 import { DropZone } from '../components/DropZone'
 import { HistoryRow } from '../components/HistoryRow'
@@ -494,6 +495,36 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
     }
   }
 
+  async function exportSelectedSubtitles(): Promise<void> {
+    if (selectedHistory.size === 0) {
+      notify('先勾选要导出的记录', 'warning')
+      return
+    }
+    try {
+      const paths = history.filter((entry) => selectedHistory.has(entry.id)).map((entry) => entry.filePath)
+      const result = await window.api.exportSubtitlesMany(paths, 'srt')
+      if (result) {
+        const extra = result.skipped ? `，${result.skipped} 条没有时间轴已跳过` : ''
+        notify(`已导出 ${result.written} 份字幕${extra}`, result.skipped ? 'warning' : 'success')
+        await window.api.revealPath(result.dir)
+      }
+    } catch (error) {
+      notify(error instanceof Error ? error.message : String(error), 'error')
+    }
+  }
+
+  async function exportSubtitle(filePath: string, format: SubtitleFormat = 'srt'): Promise<void> {
+    try {
+      const file = await window.api.exportSubtitle(filePath, format)
+      if (file) {
+        notify('字幕已导出', 'success')
+        await window.api.revealPath(file)
+      }
+    } catch (error) {
+      notify(error instanceof Error ? error.message : String(error), 'error')
+    }
+  }
+
   function toggleHistorySelection(id: string): void {
     setSelectedHistory((prev) => {
       const next = new Set(prev)
@@ -879,9 +910,16 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
                   </button>
                 </div>
               )}
+              {result.warnings && result.warnings.length > 0 && (
+                <div className="seed-row" role="alert">
+                  <span>⚠ {result.warnings.join('；')}</span>
+                </div>
+              )}
               <div className="result-actions">
                 <button className="btn ghost small" onClick={() => void window.api.revealPath(result.filePath)}><FolderOpen size={14} /> 打开文件夹</button>
                 <button className="btn ghost small" onClick={() => void exportMp3()}><Download size={14} /> 导出 MP3</button>
+                <button className="btn ghost small" onClick={() => void exportSubtitle(result.filePath, 'srt')} disabled={!result.timingPath}><Download size={14} /> 导出字幕 SRT</button>
+                <button className="btn ghost small" onClick={() => void exportSubtitle(result.filePath, 'ass')} disabled={!result.timingPath}>ASS</button>
                 <button className="btn ghost small danger-text" onClick={() => void discardResult()}><Trash2 size={14} /> 放弃</button>
                 <button className="btn ghost small" onClick={() => void discardAndRetry()} disabled={!canGenerate}><RotateCcw size={14} /> 放弃并重试</button>
               </div>
@@ -918,6 +956,9 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
                 </button>
                 <button className="text-btn" onClick={() => void exportSelectedHistory()} disabled={selectedHistory.size === 0}>
                   <Download size={13} /> 导出选中{selectedHistory.size ? `（${selectedHistory.size}）` : ''}
+                </button>
+                <button className="text-btn" onClick={() => void exportSelectedSubtitles()} disabled={selectedHistory.size === 0}>
+                  <Captions size={13} /> 导出字幕{selectedHistory.size ? `（${selectedHistory.size}）` : ''}
                 </button>
                 <button className="text-btn danger-text" onClick={() => askDelete([...selectedHistory], '删除选中的生成记录')} disabled={selectedHistory.size === 0}>
                   <Trash2 size={13} /> 删除选中{selectedHistory.size ? `（${selectedHistory.size}）` : ''}

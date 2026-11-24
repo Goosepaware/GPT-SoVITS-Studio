@@ -1,9 +1,10 @@
-param([switch]$SkipBuild)
+param([switch]$SkipBuild, [string]$Release = "")
 
 $ErrorActionPreference = "Stop"
 $project = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$release = Join-Path $project "release\GPT-SoVITS-Studio"
-if (-not (Test-Path $release)) { throw "Portable release not found: $release" }
+if (-not $Release) { $Release = Join-Path $project "release\GPT-SoVITS-Studio" }
+$release = (Resolve-Path $Release).Path
+if (-not (Test-Path (Join-Path $release "GPT-SoVITS-Studio.exe"))) { throw "Not a portable release: $release" }
 
 if (-not $SkipBuild) {
   Push-Location $project
@@ -23,4 +24,5 @@ Copy-Item (Join-Path $project "package.json") (Join-Path $appDir "package.json")
 if ($LASTEXITCODE -gt 7) { throw "failed to update python workers" }
 Copy-Item (Join-Path $project "resources\icon.ico") (Join-Path $release "resources\icon.ico") -Force
 Copy-Item (Join-Path $project "resources\icon.png") (Join-Path $release "resources\icon.png") -Force
+Copy-Item (Join-Path $project "resources\PORTABLE-README.txt") (Join-Path $release "README.txt") -Force
 Write-Host "Release app files updated (engine and data untouched): $release"

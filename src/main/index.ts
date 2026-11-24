@@ -11,6 +11,7 @@ import type {
   EngineStatus,
   GpuInfo,
   HistoryEntry,
+  SubtitleFormat,
   TtsResult,
   Voice,
   WorkerEvent
@@ -21,11 +22,20 @@ import { scanModels } from './models'
 import { getAppPaths, engineMissing, isEngineRoot, type AppPaths } from './paths'
 import { PythonWorker } from './pythonWorker'
 import { Storage } from './storage'
+import { hasTiming, writeSubtitle } from './subtitles'
 
 const execFileAsync = promisify(execFile)
 
 app.setName('GPT-SoVITS-Studio')
 if (process.platform === 'win32') app.setAppUserModelId('local.gptsovits.studio')
+
+// On some Windows machines (system ACLs altered by cleanup tools, or AV/optimizer
+// DLL injection) the sandboxed GPU child process fails with STATUS_DLL_NOT_FOUND
+// (0xC0000135) and Electron exits silently. Run GPU in the browser process; the
+// renderer sandbox stays enabled. Set GSV_SEPARATE_GPU=1 to restore the default.
+if (process.platform === 'win32' && !process.env.GSV_SEPARATE_GPU) {
+  app.commandLine.appendSwitch('in-process-gpu')
+}
 
 let paths: AppPaths
 let config: AppConfig
@@ -276,6 +286,36 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('audio:export-mp3', async (_event, sourcePath: string) => exportMp3(config.engineRoot, sourcePath))
+
+  ipcMain.handle('subtitle:export', async (_event, sourcePath: string, format: SubtitleFormat) => {
+    if (!hasTiming(sourcePath)) throw new Error('这条记录没有时间轴（旧版本生成），请重新生成后再导出字幕')
+    const base = path.basename(sourcePath).replace(/\.[^.]+$/, '')
+    const result = await dialog.showSaveDialog(mainWindow!, {
+      title: '导出字幕',
+      defaultPath: path.join(path.dirname(sourcePath), `${base}.${format}`),
+      filters: [{ name: format.toUpperCase() + ' 字幕', extensions: [format] }]
+    })
+    if (result.canceled || !result.filePath) return null
+    return writeSubtitle(sourcePath, result.filePath, format)
+  })
+
+  ipcMain.handle('subtitle:export-many', async (_event, sourcePaths: string[], format: SubtitleFormat) => {
+    const result = await dialog.showOpenDialog(mainWindow!, { title: '选择字幕导出文件夹', properties: ['openDirectory', 'createDirectory'] })
+    if (result.canceled || !result.filePaths[0]) return null
+    const dir = result.filePaths[0]
+    let written = 0
+    let skipped = 0
+    for (const src of sourcePaths) {
+      if (!hasTiming(src)) {
+        skipped++
+        continue
+      }
+      const base = path.basename(src).replace(/\.[^.]+$/, '')
+      writeSubtitle(src, path.join(dir, `${base}.${format}`), format)
+      written++
+    }
+    return { dir, written, skipped }
+  })
 
   ipcMain.handle('asr:save-results', async (_event, payload: { items: AsrFileResult[]; format: 'list' | 'txt'; suggestedName: string }) => {
     const ext = payload.format

@@ -24,6 +24,8 @@ const api: AppApi = {
   openPath: (target: string) => ipcRenderer.invoke('shell:open', target),
   revealPath: (target: string) => ipcRenderer.invoke('shell:reveal', target),
   exportMp3: (sourcePath: string) => ipcRenderer.invoke('audio:export-mp3', sourcePath),
+  exportSubtitle: (sourcePath, format) => ipcRenderer.invoke('subtitle:export', sourcePath, format),
+  exportSubtitlesMany: (sourcePaths, format) => ipcRenderer.invoke('subtitle:export-many', sourcePaths, format),
   saveAsrResults: (payload: { items: AsrFileResult[]; format: 'list' | 'txt'; suggestedName: string }) =>
     ipcRenderer.invoke('asr:save-results', payload),
   tts: {

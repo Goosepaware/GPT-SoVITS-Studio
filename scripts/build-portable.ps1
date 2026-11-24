@@ -70,30 +70,7 @@ if (-not $SkipEngine) {
 }
 
 Write-Host "[5/5] Writing README..."
-$readmeLines = @(
-  "GPT-SoVITS-Studio (v5turbo)",
-  "===========================",
-  "",
-  "启动：双击 `"GPT-SoVITS-Studio.exe`"",
-  "",
-  "这是一个绿色便携目录。不要把 exe 单独移动出去：",
-  "- resources\   Electron 应用与 Python worker",
-  "- engine\      GPT-SoVITS 运行时、v5turbo 底模、SenseVoice",
-  "- data\        配置、音色库、生成结果、日志、缓存",
-  "",
-  "首次启动会自动识别 engine 目录。所有模型推理都在本机完成。",
-  "",
-  "常用位置：",
-  "- 生成结果：data\outputs",
-  "- 运行日志：data\logs",
-  "- 配置文件：data\config.json",
-  "- 音色库：data\voices，每个 .v5t 文件就是一个可分享音色包",
-  "- 主题：设置 → 外观，彩色 / 黑白两套风格，各自支持深色 / 浅色",
-  "",
-  "卸载/释放显存：",
-  "- 模型页点【卸载并释放显存】，或直接关闭应用；worker 进程会被结束，显存由系统回收。"
-)
-Set-Content (Join-Path $release "README.txt") $readmeLines -Encoding UTF8
+Copy-Item (Join-Path $project "resources\PORTABLE-README.txt") (Join-Path $release "README.txt") -Force
 
 $bytes = (Get-ChildItem $release -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
 Write-Host ("Portable build ready: {0} ({1:N2} GB)" -f $release, ($bytes / 1GB))

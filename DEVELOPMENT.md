@@ -33,9 +33,9 @@
 ## 目录
 
 ```text
-desktop_ui_v5/
+GPT-SoVITS-Studio/     （仓库根目录）
   src/                 Electron main / preload / React renderer
-  python/              tts_worker.py, asr_worker.py, engine_common.py
+  python/              tts_worker.py, asr_worker.py, engine_common.py, timing.py
   scripts/             开发、打包、精简引擎脚本
   resources/           图标
   data/                开发时配置、输出、日志（运行时生成）
@@ -72,6 +72,18 @@ node scripts/probe-worker.mjs asr     # 直接测试 ASR worker
 - **彩色**：原有的紫青渐变风格，深色为默认。
 
 初始主题为黑白 + 跟随系统；旧配置升级后也会切到该默认。主题点击后立即预览，保存设置后持久化。
+
+## 字幕时间轴
+
+合成改为逐句生成：`tts_worker.py` 先用 `pre_seg_text` 切句，再以 `cut0` 逐句调用 `run()`，
+因此每句的真实起止位置可以从音频样本数直接算出，不依赖语音识别。
+
+- 每句输出都会去掉首尾静音，句间按 `fragmentInterval` 补静音，时间轴因此是精确的。
+- 静音 / 异常时长的句子会换种子重试（默认 2 次），仍异常则记录在 `flags` 里。
+- 生成结果旁会写 `xxx.timing.json`（每句 text / start / end / voicedStart / paused / seed / retries / flags）。
+- `src/main/subtitles.ts` 把时间轴转成 SRT / ASS / LRC：长句按标点或字数拆分并吸附到换气停顿，
+  过短的相邻句合并，默认去掉句末标点，支持整体偏移。
+- 界面入口：生成完成卡片的「导出字幕 SRT / ASS」，最近生成每行的字幕按钮，批量管理里的「导出字幕」。
 
 ## 构建便携版
 

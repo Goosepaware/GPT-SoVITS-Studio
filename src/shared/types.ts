@@ -134,7 +134,11 @@ export interface TtsResult {
   elapsed: number
   seed?: number
   historyId?: string
+  timingPath?: string
+  warnings?: string[]
 }
+
+export type SubtitleFormat = 'srt' | 'ass' | 'lrc'
 
 export interface HistoryEntry {
   id: string
@@ -212,6 +216,8 @@ export interface AppApi {
   openPath: (path: string) => Promise<void>
   revealPath: (path: string) => Promise<void>
   exportMp3: (sourcePath: string) => Promise<string | null>
+  exportSubtitle: (sourcePath: string, format: SubtitleFormat) => Promise<string | null>
+  exportSubtitlesMany: (sourcePaths: string[], format: SubtitleFormat) => Promise<{ dir: string; written: number; skipped: number } | null>
   saveAsrResults: (payload: {
     items: AsrFileResult[]
     format: 'list' | 'txt'

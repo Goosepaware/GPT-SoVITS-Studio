@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Dices, FolderOpen, Trash2 } from 'lucide-react'
+import { Captions, Dices, FolderOpen, Trash2 } from 'lucide-react'
 import type { HistoryEntry } from '@shared/types'
 import { AudioPlayer } from './AudioPlayer'
 import { basename, cn, formatRelative } from '../lib/format'
@@ -55,6 +55,20 @@ export function HistoryRow({ entry, selected, selectMode, onToggle, onDelete, on
             <Dices size={14} />
           </button>
         )}
+        <button
+          className="icon-btn small"
+          title="导出字幕 (SRT)"
+          onClick={() =>
+            void window.api
+              .exportSubtitle(entry.filePath, 'srt')
+              .then((file) => {
+                if (file) void window.api.revealPath(file)
+              })
+              .catch((error) => window.alert(error instanceof Error ? error.message : String(error)))
+          }
+        >
+          <Captions size={14} />
+        </button>
         <button className="icon-btn small" title="打开位置" onClick={() => void window.api.revealPath(entry.filePath)}>
           <FolderOpen size={14} />
         </button>
