@@ -17,12 +17,29 @@ const CONFIG = process.env.GSV_CONFIG || require('path').join(__dirname, '..', '
 const EXE = process.env.GSV_EXE || ''
 const APP = process.env.GSV_APP || ''
 function cfg() { try { return JSON.parse(fs.readFileSync(CONFIG, 'utf8')).mcp || {} } catch { return {} } }
+function out(obj) { process.stdout.write((typeof obj === 'string' ? obj.replace(/\n/g, ' ') : JSON.stringify(obj)) + '\n') }
 function post(body) {
   const c = cfg()
   return new Promise((resolve, reject) => {
     const req = http.request({ host: '127.0.0.1', port: c.port || 39281, path: '/mcp', method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + (c.token || ''), 'content-length': Buffer.byteLength(body) } }, (res) => {
-      let data = ''; res.setEncoding('utf8'); res.on('data', (d) => (data += d)); res.on('end', () => resolve({ status: res.statusCode, data }))
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: 'Bearer ' + (c.token || ''), 'content-length': Buffer.byteLength(body) } }, (res) => {
+      res.setEncoding('utf8')
+      if (String(res.headers['content-type'] || '').includes('text/event-stream')) {
+        // Forward each SSE data event (progress notifications + final reply) as one stdio line.
+        let buf = ''
+        res.on('data', (d) => {
+          buf += d
+          let i
+          while ((i = buf.indexOf('\n\n')) >= 0) {
+            const ev = buf.slice(0, i); buf = buf.slice(i + 2)
+            const data = ev.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trimStart()).join('')
+            if (data) out(data)
+          }
+        })
+        res.on('end', () => resolve({ status: 202, data: '' }))
+        return
+      }
+      let data = ''; res.on('data', (d) => (data += d)); res.on('end', () => resolve({ status: res.statusCode, data }))
     })
     req.setTimeout(0); req.on('error', reject); req.end(body)
   })

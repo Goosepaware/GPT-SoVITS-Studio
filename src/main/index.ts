@@ -100,6 +100,8 @@ function makeBootstrap(): Bootstrap {
   }
 }
 
+const workerProgressListeners = new Set<(p: { percent?: number; message: string }) => void>()
+
 function attachWorker(worker: PythonWorker): void {
   worker.on('event', (event: WorkerEvent) => {
     if (event.type === 'status') {
@@ -109,6 +111,20 @@ function attachWorker(worker: PythonWorker): void {
     }
     if (event.type === 'stage' || event.type === 'progress') {
       lastActivity[worker.engine] = Date.now()
+      if (workerProgressListeners.size) {
+        const msg =
+          event.type === 'stage'
+            ? `${event.label}${event.detail ? ` · ${event.detail}` : ''}`
+            : `${event.label || ''} ${event.current}/${event.total}`.trim()
+        const pct = event.type === 'stage' ? (typeof event.progress === 'number' ? event.progress / 100 : undefined) : event.total ? event.current / event.total : undefined
+        for (const cb of workerProgressListeners) {
+          try {
+            cb({ percent: pct, message: msg })
+          } catch {
+            /* ignore */
+          }
+        }
+      }
     }
     send('engine:event', event)
   })
@@ -853,6 +869,10 @@ function buildToolHost(): ToolHost {
       }),
     cancelTts: () => ttsWorker?.send('cancel'),
     audioFilesInFolder,
+    onWorkerProgress: (cb) => {
+      workerProgressListeners.add(cb)
+      return () => workerProgressListeners.delete(cb)
+    },
     segments: {
       list: segmentOps.list,
       preview: (audioPath, indices, overrides, count) =>

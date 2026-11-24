@@ -91,7 +91,12 @@ node scripts/probe-worker.mjs asr     # 直接测试 ASR worker
 
 - `server.ts`：精简 MCP（Streamable HTTP，JSON-RPC 2.0，POST /mcp），只监听 127.0.0.1，Bearer token 鉴权，
   拒绝浏览器跨域来源。工具错误作为 `isError` 结果返回，不中断服务。
-- `tools.ts`：13 个工具 + 3 个 prompts。耗时工具走 job：`wait` 秒内没完成就返回 jobId，
+  - 协议版本协商 `2025-06-18` / `2025-03-26` / `2024-11-05`，未知版本回退到最新。
+  - `tools/call` 带 `params._meta.progressToken` 且 `Accept: text/event-stream` 时改用 SSE 回复，
+    任务状态变化时推送 `notifications/progress`，最后发结果；普通请求仍返回 JSON。
+  - `notifications/cancelled {requestId}` 会取消该请求启动的 job。
+  - 对象结果同时放在 `content[0].text` 和 `structuredContent`。
+- `tools.ts`：21 个工具 + 3 个 prompts。耗时工具走 job：`wait` 秒内没完成就返回 jobId，
   用 `job_status` 轮询、`job_cancel` 取消。
 - `clients.ts`：生成 `data/mcp/gsv-mcp.js`（stdio 桥接，用本程序的 exe + `ELECTRON_RUN_AS_NODE`），
   以及 9 家客户端的配置写入 / 片段 / 提示词。
@@ -109,6 +114,7 @@ node scripts/probe-worker.mjs asr     # 直接测试 ASR worker
 node --experimental-strip-types scripts/test-subtitles.ts   # 字幕六种格式
 node --experimental-strip-types scripts/test-clients.mjs    # 客户端配置写入（沙箱 HOME）
 node scripts/test-mcp.mjs                                   # HTTP 协议 + 真实合成
+node scripts/test-mcp-stream.mjs                            # 协议协商 / SSE 进度 / 取消
 node scripts/test-stdio.mjs                                 # stdio 桥接 + 自动拉起
 node scripts/test-mcp-p2.mjs                                # 分段编辑 / 说话人 / 混音（真实推理）
 & node_modules\\.bin\\esbuild.cmd scripts/test-segment-edit.mjs --bundle --platform=node --format=esm --outfile=$env:TEMP\\seg-test.mjs

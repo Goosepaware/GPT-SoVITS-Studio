@@ -29,6 +29,8 @@ export interface ToolHost {
   transcribe: (files: string[], language: string) => Promise<AsrFileResult[]>
   cancelTts: () => void
   audioFilesInFolder: (dir: string) => string[]
+  /** Worker stage/progress events (0..1) while a job runs. Returns an unsubscribe function. */
+  onWorkerProgress?: (cb: (p: { percent?: number; message: string }) => void) => () => void
   /** Diarization + dubbing (see main/dub.ts). */
   dub?: {
     extractAudio: (src: string, start?: number, end?: number) => Promise<string>
@@ -59,6 +61,8 @@ interface Job {
   createdAt: number
   finishedAt?: number
   progress?: string
+  /** Fine-grained 0..1 progress from the worker (TTS stages / ASR files). */
+  percent?: number
   result?: unknown
   error?: string
   cancelRequested: boolean
@@ -72,6 +76,24 @@ interface ToolDef {
   /** Long-running: executed as a job; returns a jobId if not finished within `wait`. */
   long?: boolean
   run: (args: Json, job: Job | null) => Promise<unknown>
+}
+
+export interface CallContext {
+  /** Called with a job snapshot when status/progress changes (MCP notifications/progress). */
+  onProgress?: (p: { progress: number; total?: number; message: string }) => void
+  /** Called once a long tool's job is created (lets the server map request ids to jobs). */
+  onJob?: (jobId: string) => void
+}
+
+function progressOf(job: Job): { progress: number; total?: number; message: string } {
+  if (typeof job.percent === 'number') {
+    const p = Math.max(0, Math.min(100, Math.round(job.percent * 100)))
+    return { progress: p, total: 100, message: job.progress || `${job.tool} ${job.status}` }
+  }
+  const m = /^(\d+)\/(\d+)/.exec(job.progress || '')
+  const message = `${job.tool} ${job.status}${job.progress ? ` · ${job.progress}` : ''}`
+  if (m) return { progress: Number(m[1]), total: Number(m[2]), message }
+  return { progress: job.status === 'running' ? 0 : 1, total: 1, message }
 }
 
 const SYNTH_DEFAULTS: Json = {
@@ -152,15 +174,53 @@ export class McpTools {
     }))
   }
 
-  async call(name: string, args: Json): Promise<unknown> {
+  async call(name: string, args: Json, ctx: CallContext = {}): Promise<unknown> {
     const def = this.defs.find((d) => d.name === name)
     if (!def) throw new Error(`Unknown tool: ${name}`)
     this.host.activity(`${name} ${JSON.stringify(args).slice(0, 200)}`)
     if (!def.long) return def.run(args, null)
     const job = this.startJob(def, args)
+    ctx.onJob?.(job.id)
     const wait = Math.min(240, Math.max(0, Number(args.wait ?? 90)))
-    await Promise.race([job.promise, sleep(wait * 1000)])
+    let timer: NodeJS.Timeout | undefined
+    let offWorker: (() => void) | undefined
+    if (ctx.onProgress) {
+      let lastKey = ''
+      let lastSent = 0
+      const emit = (force: boolean): void => {
+        const key = `${job.status}|${job.progress || ''}|${job.percent ?? ''}`
+        const now = Date.now()
+        if (!force && (key === lastKey || now - lastSent < 150)) return
+        if (key === lastKey && !force) return
+        lastKey = key
+        lastSent = now
+        ctx.onProgress!(progressOf(job))
+      }
+      // Coalesce worker progress into the job so SSE notifications stay cheap.
+      offWorker = this.host.onWorkerProgress?.((p) => {
+        if (p.percent !== undefined) job.percent = p.percent
+        if (p.message) job.progress = p.message
+        emit(false)
+      })
+      emit(true)
+      timer = setInterval(() => emit(true), 1000)
+    }
+    try {
+      await Promise.race([job.promise, sleep(wait * 1000)])
+    } finally {
+      if (timer) clearInterval(timer)
+      offWorker?.()
+    }
     return this.view(job)
+  }
+
+  /** Cancel a job by id (used for MCP notifications/cancelled). */
+  cancel(jobId: string): boolean {
+    const job = this.jobs.get(jobId)
+    if (!job || job.status !== 'running') return false
+    job.cancelRequested = true
+    this.host.cancelTts()
+    return true
   }
 
   // ------------------------------------------------------------------ jobs
