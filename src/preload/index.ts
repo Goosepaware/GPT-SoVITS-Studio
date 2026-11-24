@@ -101,6 +101,13 @@ const api: AppApi = {
     minimize: () => ipcRenderer.send('window:minimize'),
     toggleMaximize: () => ipcRenderer.send('window:toggle-maximize'),
     close: () => ipcRenderer.send('window:close'),
+    /** Answer to the close prompt. remember = save as config.closeAction. */
+    closeChoice: (choice: 'tray' | 'quit' | 'cancel', remember: boolean) => ipcRenderer.send('window:close-choice', choice, remember),
+    onCloseRequest: (cb: () => void) => {
+      const listener = (): void => cb()
+      ipcRenderer.on('window:close-request', listener)
+      return () => ipcRenderer.removeListener('window:close-request', listener)
+    },
     onMaximized: (cb: (maximized: boolean) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, maximized: boolean): void => cb(maximized)
       ipcRenderer.on('window:maximized', listener)

@@ -564,6 +564,15 @@ function registerIpc(): void {
     else mainWindow.maximize()
   })
   ipcMain.on('window:close', () => mainWindow?.close())
+  ipcMain.on('window:close-choice', (_event, choice: string, remember: boolean) => {
+    if (choice !== 'tray' && choice !== 'quit') return
+    if (remember) {
+      config = { ...config, closeAction: choice }
+      saveConfig(config)
+    }
+    if (choice === 'quit') app.quit()
+    else hideToTray()
+  })
 }
 
 async function createWindow(): Promise<void> {
@@ -590,6 +599,16 @@ async function createWindow(): Promise<void> {
   mainWindow.on('maximize', () => send('window:maximized', true))
   mainWindow.on('unmaximize', () => send('window:maximized', false))
   mainWindow.on('ready-to-show', () => mainWindow?.show())
+  mainWindow.on('close', (event) => {
+    if (quitting) return
+    event.preventDefault()
+    if (config.closeAction === 'quit') app.quit()
+    else if (config.closeAction === 'tray') hideToTray()
+    else {
+      mainWindow?.show()
+      send('window:close-request', null)
+    }
+  })
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if (input.key === 'F12') {
@@ -881,6 +900,14 @@ function buildToolHost(): ToolHost {
       revert: segmentOps.revert
     },
     dub: dubOps,
+    // Queued so a running generation finishes first instead of being killed.
+    unload: (which) =>
+      gpuQueue(async () => {
+        const done = await unloadEngines(which, 'agent 请求释放显存')
+        if (done.length) notice(done.includes('TTS') ? 'tts' : 'asr', `Agent 已卸载 ${done.join(' / ')}，显存已释放`, 'info')
+        refreshTray()
+        return done
+      }),
     activity: mcpActivity
   }
 }
@@ -944,19 +971,97 @@ function showWindow(): void {
   mainWindow.focus()
 }
 
+function hideToTray(): void {
+  createTray()
+  mainWindow?.hide()
+  if (!trayHintShown && tray && process.platform === 'win32') {
+    trayHintShown = true
+    tray.displayBalloon({ title: 'GPT-SoVITS-Studio', content: '已最小化到托盘，右键图标可卸载显存或退出。' })
+  }
+}
+
+let trayHintShown = false
+
+const engineLabel = (name: string, w: { getStatus: () => { state: string } } | null | undefined): string => {
+  const s = w?.getStatus().state || 'stopped'
+  const text: Record<string, string> = { stopped: '未加载', starting: '启动中', loading: '加载中', ready: '已加载', busy: '运行中', stopping: '卸载中', error: '错误' }
+  return `${name}：${text[s] || s}`
+}
+
+const isLoaded = (w: { getStatus: () => { state: string } } | null | undefined): boolean => {
+  const s = w?.getStatus().state
+  return s === 'ready' || s === 'busy' || s === 'loading' || s === 'starting'
+}
+
+function gpuLabel(): string {
+  if (!gpuInfo) return '显存：未知'
+  return `显存：${(gpuInfo.memoryUsedMB / 1024).toFixed(1)} / ${(gpuInfo.memoryTotalMB / 1024).toFixed(1)} GB`
+}
+
+async function unloadEngines(which: 'tts' | 'asr' | 'all', reason: string): Promise<string[]> {
+  const done: string[] = []
+  if ((which === 'tts' || which === 'all') && isLoaded(ttsWorker)) {
+    await ttsWorker!.unload(reason)
+    done.push('TTS')
+  }
+  if ((which === 'asr' || which === 'all') && isLoaded(asrWorker)) {
+    await asrWorker!.unload(reason)
+    done.push('ASR')
+  }
+  return done
+}
+
+function trayUnload(which: 'tts' | 'asr' | 'all'): void {
+  void unloadEngines(which, '托盘手动卸载').then((done) => {
+    const msg = done.length ? `已卸载 ${done.join(' / ')}，显存已释放` : '没有已加载的模型'
+    if (done.length) notice(done.length === 2 ? 'tts' : (done[0].toLowerCase() as EngineName), msg, 'info')
+    tray?.displayBalloon({ title: 'GPT-SoVITS-Studio', content: msg })
+    refreshTray()
+  })
+}
+
+async function toggleMcp(): Promise<void> {
+  config = { ...config, mcp: { ...config.mcp, enabled: !mcpServer?.running } }
+  saveConfig(config)
+  await applyMcp()
+  send('mcp:changed', mcpStatus())
+  refreshTray()
+}
+
+function buildTrayMenu(): Menu {
+  const mcpOn = Boolean(mcpServer?.running)
+  return Menu.buildFromTemplate([
+    { label: '打开主界面', click: showWindow },
+    { type: 'separator' },
+    { label: engineLabel('TTS', ttsWorker), enabled: false },
+    { label: engineLabel('ASR', asrWorker), enabled: false },
+    { label: gpuLabel(), enabled: false },
+    { label: '卸载 TTS 模型', enabled: isLoaded(ttsWorker), click: () => trayUnload('tts') },
+    { label: '卸载 ASR 模型', enabled: isLoaded(asrWorker), click: () => trayUnload('asr') },
+    { label: '卸载全部（释放显存）', enabled: isLoaded(ttsWorker) || isLoaded(asrWorker), click: () => trayUnload('all') },
+    { type: 'separator' },
+    { label: mcpOn ? `MCP 服务：运行中 :${mcpServer?.port}` : 'MCP 服务：已关闭', type: 'checkbox', checked: mcpOn, click: () => void toggleMcp() },
+    { label: '打开输出目录', click: () => void shell.openPath(config.outputDir) },
+    { type: 'separator' },
+    { label: '退出', click: () => app.quit() }
+  ])
+}
+
+function refreshTray(): void {
+  if (!tray || tray.isDestroyed()) return
+  const mcp = mcpServer?.running ? ` · MCP :${mcpServer.port}` : ''
+  tray.setToolTip(`GPT-SoVITS-Studio${mcp}\n${engineLabel('TTS', ttsWorker)}  ${engineLabel('ASR', asrWorker)}\n${gpuLabel()}`)
+  tray.setContextMenu(buildTrayMenu())
+}
+
 function createTray(): void {
   if (tray) return
   const iconPath = app.isPackaged ? path.join(process.resourcesPath, 'icon.ico') : path.join(paths.appRoot, 'resources', 'icon.ico')
   tray = new Tray(fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty())
-  tray.setToolTip('GPT-SoVITS-Studio · MCP 服务运行中')
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: '打开主界面', click: showWindow },
-      { type: 'separator' },
-      { label: '退出', click: () => app.quit() }
-    ])
-  )
   tray.on('click', showWindow)
+  // Rebuild right before showing so states are current.
+  tray.on('right-click', () => refreshTray())
+  refreshTray()
 }
 
 async function boot(): Promise<void> {
@@ -966,9 +1071,10 @@ async function boot(): Promise<void> {
   if (config.outputDir && !fs.existsSync(config.outputDir)) fs.mkdirSync(config.outputDir, { recursive: true })
   registerIpc()
   await applyMcp()
-  if (headless) createTray()
-  else await createWindow()
+  createTray()
+  if (!headless) await createWindow()
   startGpuMonitor()
+  setInterval(refreshTray, 5000)
   startIdleMonitor()
 }
 

@@ -21,6 +21,7 @@ const INSTRUCTIONS = [
   'Voices: list_voices -> synthesize (one text) or synthesize_script (many lines, manifest.json).',
   'New voices: create_voice from a clean 3-10 s clip, or voice_from_span from a diarize reference.',
   'Long tools (synthesize*, transcribe, diarize, create_voice, mix_dub, preview_segments) return a jobId if not done within `wait` s; then call job_status {jobId, wait}. Progress notifications are sent when a progressToken is given.',
+  'VRAM: models stay loaded between calls for speed. Do not unload during a multi-step task; call unload_models once the whole task is done (or when the user asks).',
   'Fix single bad sentences: list_segments -> preview_segments -> commit_segment (revert_edits to undo).',
   'Dubbing: diarize -> translate -> synthesize_script with start/end -> mix_dub. Subtitles: export_subtitle.',
   'Paths must be absolute local paths. See prompts for full workflows.'

@@ -27,7 +27,8 @@ export function defaultConfig(engineRoot: string, dataRoot: string): AppConfig {
     device: 'cuda:0',
     half: true,
     subtitle: defaultSubtitleConfig(),
-    mcp: { enabled: false, port: 39281, token: randomToken(), pathAllowlist: [] }
+    mcp: { enabled: false, port: 39281, token: randomToken(), pathAllowlist: [] },
+    closeAction: 'ask'
   }
 }
 
@@ -92,7 +93,8 @@ export function loadConfig(): AppConfig {
       device: raw.device || 'cuda:0',
       half: raw.half !== false,
       subtitle: mergeSubtitle(raw.subtitle),
-      mcp: mergeMcp(raw.mcp, fallback.mcp)
+      mcp: mergeMcp(raw.mcp, fallback.mcp),
+      closeAction: raw.closeAction === 'tray' || raw.closeAction === 'quit' ? raw.closeAction : 'ask'
     }
     delete (merged as Partial<StoredConfig>).version
     if (!merged.engineRoot || !isEngineRoot(merged.engineRoot)) {

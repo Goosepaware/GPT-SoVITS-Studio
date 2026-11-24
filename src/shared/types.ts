@@ -13,7 +13,11 @@ export interface AppConfig {
   half: boolean
   subtitle: SubtitleConfig
   mcp: McpConfig
+  /** What the window close button does: ask each time, hide to tray, or quit. */
+  closeAction: CloseAction
 }
+
+export type CloseAction = 'ask' | 'tray' | 'quit'
 
 export type AsrModelId = 'sensevoice'
 
@@ -413,6 +417,10 @@ export interface AppApi {
     minimize: () => void
     toggleMaximize: () => void
     close: () => void
+    /** Answer to the in-app close prompt; remember stores it as config.closeAction. */
+    closeChoice: (choice: 'tray' | 'quit' | 'cancel', remember: boolean) => void
+    /** Fired when the main process wants the close prompt shown. */
+    onCloseRequest: (cb: () => void) => () => void
     onMaximized: (cb: (maximized: boolean) => void) => () => void
   }
   onEngineEvent: (cb: (event: WorkerEvent) => void) => () => void

@@ -139,6 +139,15 @@ node $env:TEMP\\seg-test.mjs                                # 分段替换 / 撤
 3. `revertEdits`：`last` 撤销一步，`original` 还原并删除备份。
 4. 替换后写回 `edited` / `editCount`，历史记录同步，自动输出字幕会重新生成。
 
+## 托盘与关闭行为
+
+- 托盘常驻，右键菜单每次按当前状态重建（`refreshTray` 每 5 秒也刷一次）：TTS/ASR 状态、显存、
+  卸载 TTS / ASR / 全部、MCP 开关、打开输出目录、退出。
+- 卸载走 `unloadEngines()`，与界面按钮、MCP `unload_models` 共用一条路径。
+- 窗口关闭交给 `mainWindow.on('close')`：`config.closeAction` 为 `ask` 时发 `window:close-request`，
+  渲染层弹 `CloseDialog`，选择通过 `window:close-choice` 回传；`tray` 直接 `hideToTray()`，`quit` 直接退出。
+- `hideToTray()` 前先等 220ms，让弹窗的退出动画跑完（窗口隐藏后 rAF 暂停，动画会卡在中间）。
+
 ## 说话人分离与译制
 
 - `python/diarize.py`：FSMN-VAD 切段 → 4–6 秒窗口 → CAM++ 嵌入 → 平均连接 AHC 聚类

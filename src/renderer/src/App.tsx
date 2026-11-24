@@ -17,6 +17,8 @@ const EMPTY_STATUS: Record<'tts' | 'asr', EngineStatus> = {
   asr: { engine: 'asr', state: 'stopped', models: {} }
 }
 
+import { CloseDialog } from './components/CloseDialog'
+
 export default function App(): JSX.Element {
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null)
   const [fatal, setFatal] = useState<string | null>(null)
@@ -154,6 +156,7 @@ export default function App(): JSX.Element {
       <div className="ambient ambient-b" />
       <div className="ambient ambient-c" />
       <TitleBar />
+      <CloseDialog />
       <div className="app-body">
         <Sidebar page={page} onPage={setPage} engines={engines} gpu={gpu} />
         <main className="main-area">

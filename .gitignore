@@ -25,3 +25,5 @@ scripts/shot-*.mjs
 Thumbs.db
 
 scripts/prep-*.mjs
+
+scripts/debug-*.mjs

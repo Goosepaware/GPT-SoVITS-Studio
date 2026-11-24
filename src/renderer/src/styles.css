@@ -3667,3 +3667,10 @@ input[type="range"]::-webkit-slider-thumb {
 .diar-line.low { outline: 1px dashed color-mix(in srgb, var(--danger) 50%, transparent); }
 .diar-time { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .diar-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Close dialog */
+.close-remember { display: flex; align-items: center; gap: 8px; margin-right: auto; font-size: 12px; color: var(--text-2, #9aa0aa); cursor: pointer; user-select: none; }
+.close-remember input { accent-color: var(--accent, currentColor); }
+.close-actions { display: flex; gap: 8px; }
+.close-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
+

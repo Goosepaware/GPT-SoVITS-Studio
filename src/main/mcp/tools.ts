@@ -51,6 +51,8 @@ export interface ToolHost {
     commit: (audioPath: string, editId: string, choices: { index: number; candidate: number }[], matchLoudness?: boolean) => unknown
     revert: (audioPath: string, mode: 'original' | 'last') => unknown
   }
+  /** Unload engines and free VRAM. Returns the engines actually unloaded. */
+  unload?: (which: 'tts' | 'asr' | 'all') => Promise<string[]>
   activity: (line: string) => void
 }
 
@@ -680,6 +682,19 @@ export class McpTools {
           if (!h.segments) throw new Error('Segment editing unavailable')
           const t = h.segments.revert(this.checkPath(String(a.audioPath || '')), a.mode === 'original' ? 'original' : 'last') as Json
           return { duration: t.duration, edited: !!t.edited }
+        }
+      },
+      {
+        name: 'unload_models',
+        description:
+          "Unload TTS and/or ASR models to free GPU memory. Models auto-load on the next call (first call is then slower), so do NOT unload between lines of one long task; call this once when the whole task is finished, or when the user needs VRAM. which: 'tts' | 'asr' | 'all' (default all). Running jobs are not interrupted: unload waits for the GPU queue.",
+        inputSchema: { type: 'object', properties: { which: { type: 'string', enum: ['tts', 'asr', 'all'] } } },
+        run: async (a) => {
+          if (!h.unload) throw new Error('Unload unavailable')
+          const which = a.which === 'tts' || a.which === 'asr' ? a.which : 'all'
+          const unloaded = await h.unload(which)
+          const st = h.status() as Json
+          return { unloaded, gpu: st.gpu ?? null }
         }
       },
       {

@@ -152,6 +152,14 @@ export function SettingsPage({ bootstrap, notify, onBootstrap }: Props): JSX.Ele
             </Select>
           </div>
           <div className="setting-row">
+            <div><strong>点击关闭按钮时</strong><span>最小化到托盘后 MCP 与已加载模型继续保留</span></div>
+            <Select value={form.closeAction || 'ask'} onChange={(value) => patch({ closeAction: value as 'ask' | 'tray' | 'quit' })} compact className="tiny">
+              <option value="ask">每次询问</option>
+              <option value="tray">最小化到托盘</option>
+              <option value="quit">直接退出</option>
+            </Select>
+          </div>
+          <div className="setting-row">
             <div><strong>半精度 FP16</strong><span>降低显存占用，50 系显卡建议开启</span></div>
             <Toggle checked={form.half} onChange={(value) => patch({ half: value })} />
           </div>
