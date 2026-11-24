@@ -12,11 +12,29 @@ export function ffprobePath(engineRoot: string): string {
   return path.join(engineRoot, 'runtime', 'ffprobe.exe')
 }
 
-export function run(command: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+export function run(command: string, args: string[], timeoutMs = 0): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const proc = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
+    let done = false
+    const finish = (result: { code: number; stdout: string; stderr: string }): void => {
+      if (done) return
+      done = true
+      if (timer) clearTimeout(timer)
+      resolve(result)
+    }
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            try {
+              if (proc.pid) spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true })
+            } catch {
+              proc.kill()
+            }
+            finish({ code: -1, stdout, stderr: `${stderr}\n[超时 ${Math.round(timeoutMs / 1000)} 秒，已终止：${path.basename(command)} ${args.join(' ').slice(0, 400)}]` })
+          }, timeoutMs)
+        : null
     proc.stdout.setEncoding('utf8')
     proc.stderr.setEncoding('utf8')
     proc.stdout.on('data', (chunk: string) => {
@@ -25,8 +43,8 @@ export function run(command: string, args: string[]): Promise<{ code: number; st
     proc.stderr.on('data', (chunk: string) => {
       stderr += chunk
     })
-    proc.on('error', (error) => resolve({ code: -1, stdout, stderr: error.message }))
-    proc.on('exit', (code) => resolve({ code: code ?? -1, stdout, stderr }))
+    proc.on('error', (error) => finish({ code: -1, stdout, stderr: error.message }))
+    proc.on('exit', (code) => finish({ code: code ?? -1, stdout, stderr }))
   })
 }
 

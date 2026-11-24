@@ -7,6 +7,7 @@ import { TitleBar } from './components/TitleBar'
 import { ToastStack } from './components/ToastStack'
 import { TopBar } from './components/TopBar'
 import { AsrPage } from './pages/AsrPage'
+import { AudioToolsPage } from './pages/AudioToolsPage'
 import { ModelsPage, type LogLine } from './pages/ModelsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { TtsPage } from './pages/TtsPage'
@@ -174,6 +175,9 @@ export default function App(): JSX.Element {
             </div>
             <div className={page === 'asr' ? 'page-pane active' : 'page-pane'}>
               <AsrPage bootstrap={bootstrap} engines={engines} notify={notify} onSendToReference={sendToReference} />
+            </div>
+            <div className={page === 'audio' ? 'page-pane active' : 'page-pane'}>
+              <AudioToolsPage bootstrap={bootstrap} notify={notify} onBootstrap={setBootstrap} />
             </div>
             <div className={page === 'models' ? 'page-pane active' : 'page-pane'}>
               <ModelsPage bootstrap={bootstrap} engines={engines} gpu={gpu} logs={logs} notify={notify} onBootstrap={setBootstrap} />

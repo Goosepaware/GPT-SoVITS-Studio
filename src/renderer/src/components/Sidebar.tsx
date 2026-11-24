@@ -1,13 +1,14 @@
 import { motion } from 'framer-motion'
-import { AudioLines, Cpu, Mic2, Settings2, Sparkles } from 'lucide-react'
+import { AudioLines, Cpu, Mic2, Scissors, Settings2, Sparkles } from 'lucide-react'
 import type { EngineStatus, GpuInfo } from '@shared/types'
 import { cn } from '../lib/format'
 
-export type PageKey = 'tts' | 'asr' | 'models' | 'settings'
+export type PageKey = 'tts' | 'asr' | 'audio' | 'models' | 'settings'
 
 const NAV: Array<{ key: PageKey; label: string; hint: string; icon: typeof AudioLines }> = [
   { key: 'tts', label: '语音合成', hint: 'Reference → Voice', icon: AudioLines },
   { key: 'asr', label: '语音转文字', hint: 'Speech → Text', icon: Mic2 },
+  { key: 'audio', label: '音频处理', hint: 'Vocal Separation', icon: Scissors },
   { key: 'models', label: '模型与显存', hint: 'Runtime', icon: Cpu },
   { key: 'settings', label: '设置', hint: 'Preferences', icon: Settings2 }
 ]

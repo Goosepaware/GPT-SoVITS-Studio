@@ -3674,3 +3674,16 @@ input[type="range"]::-webkit-slider-thumb {
 .close-actions { display: flex; gap: 8px; }
 .close-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
 
+
+/* ---- audio tools (separation) ---- */
+.sep-models { display: grid; gap: 8px; }
+.sep-model { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border, rgba(127,127,127,.2)); cursor: pointer; }
+.sep-model.active { border-color: var(--accent, #7c8cff); }
+.sep-model-copy { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sep-results { display: grid; gap: 10px; margin-top: 12px; }
+.sep-track { display: flex; align-items: center; gap: 10px; }
+.sep-track-label { width: 40px; flex: none; opacity: .75; }
+.sep-track > :last-child { flex: 1; min-width: 0; }
+.seg-toggle { display: flex; gap: 4px; }
+.seg-toggle .active { background: var(--accent-soft, rgba(124,140,255,.18)); }
+

@@ -81,7 +81,8 @@ const DEFAULT_PARAMS = {
   repetitionPenalty: 1.35,
   seed: -1,
   batchSize: 1,
-  sampleSteps: 4
+  sampleSteps: 4,
+  fragmentInterval: 0.3
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }): JSX.Element {
@@ -160,6 +161,7 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
   const [seed, setSeed] = useState(DEFAULT_PARAMS.seed)
   const [batchSize, setBatchSize] = useState(DEFAULT_PARAMS.batchSize)
   const [sampleSteps, setSampleSteps] = useState(DEFAULT_PARAMS.sampleSteps)
+  const [fragmentInterval, setFragmentInterval] = useState(DEFAULT_PARAMS.fragmentInterval)
   const [job, setJob] = useState<Job | null>(null)
   const [result, setResult] = useState<TtsResult | null>(null)
   const [resultText, setResultText] = useState('')
@@ -344,6 +346,7 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
     setSeed(DEFAULT_PARAMS.seed)
     setBatchSize(DEFAULT_PARAMS.batchSize)
     setSampleSteps(DEFAULT_PARAMS.sampleSteps)
+    setFragmentInterval(DEFAULT_PARAMS.fragmentInterval)
   }
 
   function reuseSeed(value: number): void {
@@ -393,7 +396,7 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
         seed,
         batchSize,
         sampleSteps,
-        fragmentInterval: 0.3,
+        fragmentInterval,
         parallelInfer: true,
         outputPath: '',
         voiceId: voiceId || undefined
@@ -850,6 +853,17 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
                       ))}
                     </div>
                   </div>
+                </div>
+                <div className="field step-field">
+                  <span className="field-label">段间间隔 · {fragmentInterval.toFixed(2)} 秒</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1.5}
+                    step={0.05}
+                    value={fragmentInterval}
+                    onChange={(event) => setFragmentInterval(Number(event.target.value))}
+                  />
                 </div>
                 <div className="advanced-note">v5turbo 官方默认：top_k 15 · top_p 1 · temperature 1 · 重复惩罚 1.35 · 采样步数 4 · 种子 -1 为随机</div>
               </motion.div>

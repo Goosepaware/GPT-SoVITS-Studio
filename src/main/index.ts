@@ -44,6 +44,8 @@ import {
   type TimingSource
 } from './segmentEdit'
 import { cutClip, extractAudio, fitLine, mixDub, type MixItem } from './dub'
+import { cancelSepDownload, cancelSeparation, downloadSepModel, listSepModels, removeSepModel, separate as runSeparate } from './separation'
+import type { SepResult } from '@shared/types'
 import type { DiarizeResult } from '@shared/types'
 
 const execFileAsync = promisify(execFile)
@@ -499,6 +501,29 @@ function registerIpc(): void {
     fs.writeFileSync(r.filePath, JSON.stringify({ source: src, lines }, null, 1), 'utf-8')
     return r.filePath
   })
+  ipcMain.handle('sep:models', () => listSepModels(config.engineRoot))
+  ipcMain.handle('sep:download', async (_e, id: string) => {
+    await downloadSepModel(config.engineRoot, id, config.hfSource || 'mirror', (received, total) =>
+      send('sep:event', { kind: 'download', id, received, total })
+    )
+    return listSepModels(config.engineRoot)
+  })
+  ipcMain.handle('sep:cancel-download', (_e, id: string) => cancelSepDownload(id))
+  ipcMain.handle('sep:remove', (_e, id: string) => {
+    removeSepModel(config.engineRoot, id)
+    return listSepModels(config.engineRoot)
+  })
+  ipcMain.handle('sep:separate', (_e, src: string, model?: string) => dubOps.separate(src, model))
+  ipcMain.handle('sep:cancel', () => cancelSeparation())
+  ipcMain.handle('sep:export', async (_e, r: SepResult) => {
+    const picked = await dialog.showOpenDialog({ title: '选择导出目录', properties: ['openDirectory', 'createDirectory'] })
+    const dir = picked.canceled ? null : picked.filePaths[0]
+    if (!dir) return null
+    const stem = path.basename(r.sourcePath, path.extname(r.sourcePath))
+    fs.copyFileSync(r.vocals, path.join(dir, `${stem}_vocals.wav`))
+    fs.copyFileSync(r.instrumental, path.join(dir, `${stem}_instrumental.wav`))
+    return dir
+  })
   ipcMain.handle('segments:list', (_e, audioPath: string) => segmentOps.list(audioPath))
   ipcMain.handle('segments:preview', (_e, audioPath: string, indices: number[], overrides, count?: number, source?: TimingSource) =>
     segmentOps.preview(audioPath, indices, overrides, count, source)
@@ -801,7 +826,25 @@ const dubOps = {
     await cutClip(config.engineRoot, src, start, end, clip)
     return buildToolHost().createVoice({ sourcePath: clip, name, transcript, lang })
   },
-  mix: (base: string, items: MixItem[], outputPath: string, bgm?: 'keep' | 'duck' | 'remove') => mixDub(config.engineRoot, base, items, outputPath, bgm),
+  mix: (base: string, items: MixItem[], outputPath: string, bgm?: 'keep' | 'duck' | 'remove' | 'replace', bedPath?: string) =>
+    mixDub(config.engineRoot, base, items, outputPath, bgm, bedPath),
+  /** Vocal / instrumental separation (one-shot process on the GPU queue, cached per source+model). */
+  separate: (src: string, model?: string, onProgress?: (current: number, total: number, label: string) => void): Promise<SepResult> =>
+    gpuQueue(() =>
+      runSeparate(src, {
+        engineRoot: config.engineRoot,
+        pythonDir: paths.pythonDir,
+        tempDir: paths.tempDir,
+        logsDir: paths.logsDir,
+        device: config.device,
+        model,
+        onProgress: (current, total, label) => {
+          send('sep:event', { kind: 'separate', current, total, label })
+          onProgress?.(current, total, label)
+        }
+      })
+    ),
+  sepModels: () => listSepModels(config.engineRoot),
   fit: (index: number, target: number, baseSpeed: number, synth: (speed: number) => Promise<{ filePath: string; duration: number }>) =>
     fitLine(config.engineRoot, index, target, baseSpeed, synth)
 }

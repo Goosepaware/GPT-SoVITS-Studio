@@ -6,11 +6,14 @@ import {
   type AsrFileResult,
   type HistoryEntry,
   type ModelCatalog,
+  type SepModelInfo,
+  type SepResult,
   type SubtitleFormat,
   type TtsResult,
   type Voice
 } from '@shared/types'
 import { hasTiming, timingPathFor, writeSubtitles } from '../subtitles'
+import { alignSentences, buildBilingualSrt, burnSubtitles, parseSubtitleFile, splitLongCues, writeAss, type BiCue } from '../burn'
 
 type Json = Record<string, unknown>
 
@@ -36,7 +39,15 @@ export interface ToolHost {
     extractAudio: (src: string, start?: number, end?: number) => Promise<string>
     diarize: (src: string, opts: { numSpeakers?: number; language?: string; transcribe?: boolean; threshold?: number }) => Promise<unknown>
     voiceFromSpan: (src: string, start: number, end: number, name: string, transcript?: string, lang?: string) => Promise<Voice>
-    mix: (base: string, items: { audioPath: string; start: number; gain?: number }[], outputPath: string, bgm?: 'keep' | 'duck' | 'remove') => Promise<string>
+    mix: (
+      base: string,
+      items: { audioPath: string; start: number; gain?: number }[],
+      outputPath: string,
+      bgm?: 'keep' | 'duck' | 'remove' | 'replace',
+      bedPath?: string
+    ) => Promise<string>
+    separate: (src: string, model?: string, onProgress?: (current: number, total: number, label: string) => void) => Promise<SepResult>
+    sepModels: () => SepModelInfo[]
     fit: (
       index: number,
       target: number,
@@ -108,7 +119,8 @@ const SYNTH_DEFAULTS: Json = {
   repetitionPenalty: 1.35,
   seed: -1,
   batchSize: 1,
-  sampleSteps: 4,
+  // Agent default: 8 steps (better prosody than the UI's fast 4); the agent may override per call / per line.
+  sampleSteps: 8,
   fragmentInterval: 0.3,
   parallelInfer: true,
   maxRetries: 2
@@ -117,7 +129,7 @@ const SYNTH_DEFAULTS: Json = {
 const PARAMS_SCHEMA = {
   type: 'object',
   description:
-    'Optional inference params: speed (0.5-2), sampleSteps (4|8|16|32), seed (-1 random), temperature, topK, topP, repetitionPenalty, fragmentInterval (gap between sentences, s), splitMethod (cut0..cut5), maxRetries (default 2), gptPath, sovitsPath.',
+    'Optional inference params: speed (0.5-2), sampleSteps (4|8|16|32; default 8 for agents, raise to 16 for hero lines, 4 for fast drafts), seed (-1 random), temperature, topK, topP, repetitionPenalty, fragmentInterval (silence between sentences inside one line, s; default 0.3, dubbing 0.1-0.2, narration 0.3-0.5), splitMethod (cut0 = no split, cut5 = by punctuation; timed dubbing lines default to cut0), maxRetries (default 2), gptPath, sovitsPath.',
   additionalProperties: true
 }
 
@@ -345,13 +357,21 @@ export class McpTools {
         name: 'studio_status',
         description: 'GPT-SoVITS-Studio status: engine states, loaded models, GPU/VRAM, output dir, voice count, version.',
         inputSchema: { type: 'object', properties: {} },
-        run: async () => ({ version: h.version, ...h.status() })
+        run: async () => ({
+          version: h.version,
+          ...h.status(),
+          separation: { installed: (h.dub?.sepModels() || []).filter((m) => m.installed).map((m) => m.id) }
+        })
       },
       {
         name: 'list_models',
-        description: 'List v5turbo GPT (.ckpt) and SoVITS (.pth) weights. Pass a path as params.gptPath / params.sovitsPath to synthesize; default = base models.',
+        description:
+          'List v5turbo GPT (.ckpt) and SoVITS (.pth) weights (pass a path as params.gptPath / params.sovitsPath to synthesize; default = base models) and vocal separation models (installed flag; users download them on the 音频处理 page).',
         inputSchema: { type: 'object', properties: {} },
-        run: async () => h.models().tts
+        run: async () => ({
+          ...h.models().tts,
+          separation: (h.dub?.sepModels() || []).map((m) => ({ id: m.id, label: m.label, installed: m.installed, note: m.note }))
+        })
       },
       {
         name: 'list_voices',
@@ -475,10 +495,12 @@ export class McpTools {
             const id = str(line.id) || String(i + 1).padStart(3, '0')
             if (job) job.progress = `${i}/${lines.length} · ${id}`
             try {
-              const lp = { ...shared, ...((line.params as Json) || {}) }
+              let lp: Json = { ...shared, ...((line.params as Json) || {}) }
               const s0 = Number(line.start)
               const s1 = Number(line.end)
               if (h.dub && Number.isFinite(s0) && Number.isFinite(s1) && s1 > s0) {
+                // Timed dubbing line = one sentence already segmented by the agent: don't split again.
+                lp = { splitMethod: 'cut0', ...lp }
                 let last: Json = {}
                 const fit = await h.dub.fit(i, s1 - s0, Number(lp.speed) || 1, async (speed) => {
                   last = await this.synthOne({ ...defaults, ...line, params: { ...lp, speed } }, { outputDir, fileName: id, voice: str(a.voice), formats })
@@ -564,12 +586,15 @@ export class McpTools {
             numSpeakers: { type: 'number' },
             language: { type: 'string' },
             transcribe: { type: 'boolean' },
-            threshold: { type: 'number', description: 'Cosine distance for auto speaker count (default 0.6; lower = more speakers)' }
+            threshold: { type: 'number', description: 'Cosine distance for auto speaker count (default 0.6; lower = more speakers)' },
+            useVocals: { type: 'boolean', description: 'Separate vocals first (needs a separation model; cached). Recommended for videos with music.' }
           }
         },
         run: async (a) => {
           if (!h.dub) throw new Error('Dubbing unavailable')
-          return h.dub.diarize(this.checkPath(String(a.audioPath || '')), {
+          let src = this.checkPath(String(a.audioPath || ''))
+          if (a.useVocals === true) src = (await h.dub.separate(src)).vocals
+          return h.dub.diarize(src, {
             numSpeakers: Number(a.numSpeakers) || undefined,
             language: str(a.language),
             transcribe: a.transcribe !== false,
@@ -583,38 +608,198 @@ export class McpTools {
         inputSchema: {
           type: 'object',
           required: ['sourcePath', 'start', 'end', 'name'],
-          properties: { sourcePath: { type: 'string' }, start: { type: 'number' }, end: { type: 'number' }, name: { type: 'string' }, transcript: { type: 'string' }, lang: { type: 'string' } }
+          properties: {
+            sourcePath: { type: 'string' },
+            start: { type: 'number' },
+            end: { type: 'number' },
+            name: { type: 'string' },
+            transcript: { type: 'string' },
+            lang: { type: 'string' },
+            useVocals: { type: 'boolean', description: 'Cut from separated vocals (cleaner reference). Same timeline as the source.' }
+          }
         },
         run: async (a) => {
           if (!h.dub) throw new Error('Dubbing unavailable')
-          const v = await h.dub.voiceFromSpan(this.checkPath(String(a.sourcePath || '')), Number(a.start), Number(a.end), String(a.name || ''), str(a.transcript), str(a.lang))
+          let src = this.checkPath(String(a.sourcePath || ''))
+          if (a.useVocals === true) src = (await h.dub.separate(src)).vocals
+          const v = await h.dub.voiceFromSpan(src, Number(a.start), Number(a.end), String(a.name || ''), str(a.transcript), str(a.lang))
           return voiceView(v)
+        }
+      },
+      {
+        name: 'separate_audio',
+        description:
+          'Split a video/audio into vocals.wav and instrumental.wav (UVR MDX-Net, 44.1 kHz stereo). Cached per source+model, so calling again is free. Use vocals for diarize/voice_from_span and instrumental as bedPath for mix_dub bgm:"replace". Fails if no separation model is installed: tell the user to download one on the 音频处理 page.',
+        long: true,
+        inputSchema: {
+          type: 'object',
+          required: ['sourcePath'],
+          properties: { sourcePath: { type: 'string' }, model: { type: 'string', description: "'kim_vocal_2' (cleaner vocals, default) or 'inst_hq_3' (fuller background)" } }
+        },
+        run: async (a, job) => {
+          if (!h.dub) throw new Error('Dubbing unavailable')
+          return h.dub.separate(this.checkPath(String(a.sourcePath || '')), str(a.model), (cur, total, label) => {
+            if (job) {
+              job.progress = `${label} ${cur}/${total}`
+              job.percent = total ? cur / total : undefined
+            }
+          })
         }
       },
       {
         name: 'mix_dub',
         description:
-          "Place dub clips at their start times over the original and mix. bgm: 'keep' (original + dub), 'duck' (original lowered under dub, default), 'remove' (dub only; true vocal removal needs a separation model, not included). Output .mp4/.mkv keeps the video stream; .wav = audio only.",
+          "Place dub clips at their start times over the original and mix. bgm: 'replace' (separated instrumental bedPath + dub; best, original voices gone, music/SFX kept), 'duck' (original lowered under dub, default without bedPath), 'keep' (original + dub), 'remove' (dub only). Pass manifestPath (from synthesize_script with start/end lines) instead of items to use every ok line. Output .mp4/.mkv keeps the video stream; .wav = audio only.",
         long: true,
         inputSchema: {
           type: 'object',
-          required: ['basePath', 'items', 'outputPath'],
+          required: ['basePath', 'outputPath'],
           properties: {
             basePath: { type: 'string', description: 'Original video or audio' },
             items: { type: 'array', items: { type: 'object', properties: { audioPath: { type: 'string' }, start: { type: 'number' }, gain: { type: 'number' } } } },
+            manifestPath: { type: 'string', description: 'manifest.json from synthesize_script; used when items is empty' },
             outputPath: { type: 'string' },
-            bgm: { type: 'string', enum: ['keep', 'duck', 'remove'] }
+            bgm: { type: 'string', enum: ['replace', 'duck', 'keep', 'remove'] },
+            bedPath: { type: 'string', description: 'instrumental.wav from separate_audio (required for replace)' }
           }
         },
         run: async (a) => {
           if (!h.dub) throw new Error('Dubbing unavailable')
-          const items = (Array.isArray(a.items) ? (a.items as Json[]) : []).map((x) => ({
+          let raw = Array.isArray(a.items) ? (a.items as Json[]) : []
+          if (!raw.length && a.manifestPath) {
+            const m = JSON.parse(fs.readFileSync(this.checkPath(String(a.manifestPath)), 'utf-8')) as { items?: Json[] }
+            raw = (m.items || []).filter((x) => x.ok && x.filePath && Number.isFinite(Number(x.start))).map((x) => ({ audioPath: x.filePath, start: x.start }))
+            if (!raw.length) throw new Error('manifest has no ok lines with start times')
+          }
+          const items = raw.map((x) => ({
             audioPath: this.checkPath(String(x.audioPath || '')),
             start: Number(x.start) || 0,
             gain: x.gain === undefined ? undefined : Number(x.gain)
           }))
-          const bgm = a.bgm === 'keep' || a.bgm === 'remove' ? a.bgm : 'duck'
-          return { outputPath: await h.dub.mix(this.checkPath(String(a.basePath || '')), items, this.checkPath(String(a.outputPath || '')), bgm) }
+          const bedPath = a.bedPath ? this.checkPath(String(a.bedPath)) : undefined
+          const bgm = a.bgm === 'keep' || a.bgm === 'remove' || a.bgm === 'duck' ? a.bgm : a.bgm === 'replace' || bedPath ? 'replace' : 'duck'
+          const out = await h.dub.mix(this.checkPath(String(a.basePath || '')), items, this.checkPath(String(a.outputPath || '')), bgm, bedPath)
+          return { outputPath: out, lines: items.length, bgm }
+        }
+      },
+      {
+        name: 'import_subtitle',
+        description:
+          'Read an existing SRT/VTT (e.g. YouTube CC) as transcript items [{start,end,text}]. Prefer this over diarize transcription when good captions exist; then build_script to re-segment into full sentences.',
+        inputSchema: { type: 'object', required: ['path'], properties: { path: { type: 'string' } } },
+        run: async (a) => ({ items: parseSubtitleFile(this.checkPath(String(a.path || ''))) })
+      },
+      {
+        name: 'build_script',
+        description:
+          'Turn transcript items (from diarize or import_subtitle) into timed sentence lines. YOU segment: pass sentences = the transcript text re-cut into complete, natural sentences, in order, VERBATIM (only punctuation may change; do not translate here). The server aligns each sentence to the transcript and computes start/end (estimated by character position inside an item). Returns lines [{id,start,end,text,speaker,matched}]; check lines with matched:false. Then translate each line and pass lines (with start/end) to synthesize_script. Writes script.json if outputDir is given.',
+        inputSchema: {
+          type: 'object',
+          required: ['items', 'sentences'],
+          properties: {
+            items: { type: 'array', items: { type: 'object', properties: { start: { type: 'number' }, end: { type: 'number' }, text: { type: 'string' }, speaker: { type: 'string' } } } },
+            sentences: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, speaker: { type: 'string' } } } },
+            outputDir: { type: 'string' }
+          }
+        },
+        run: async (a) => {
+          const items = (Array.isArray(a.items) ? (a.items as Json[]) : []).map((x) => ({
+            start: Number(x.start) || 0,
+            end: Number(x.end) || 0,
+            text: String(x.text || ''),
+            speaker: str(x.speaker)
+          }))
+          const sentences = (Array.isArray(a.sentences) ? (a.sentences as unknown[]) : []).map((x) =>
+            typeof x === 'string' ? { text: x } : { text: String((x as Json).text || ''), speaker: str((x as Json).speaker) }
+          )
+          if (!items.length || !sentences.length) throw new Error('items and sentences are required')
+          const r = alignSentences(items, sentences)
+          let scriptPath: string | undefined
+          if (str(a.outputDir)) {
+            const dir = this.checkPath(String(a.outputDir))
+            fs.mkdirSync(dir, { recursive: true })
+            scriptPath = path.join(dir, 'script.json')
+            fs.writeFileSync(scriptPath, JSON.stringify(r, null, 1), 'utf-8')
+          }
+          return { ...r, scriptPath, note: r.leftover ? 'Transcript text after the last sentence was not covered (leftover).' : undefined }
+        }
+      },
+      {
+        name: 'burn_subtitles',
+        description:
+          "Add bilingual subtitles to a video. primary = translated lines (large, bottom), secondary = original lines (small, above; layout 'split' puts it at the top). Each is lines [{start,end,text}], a manifest.json/script.json path, or an .srt/.vtt path. For a synthesize_script manifest, timing 'dub' (default) shows start..start+dub duration, 'slot' uses the original window. mode 'hard' burns in (re-encode, NVENC if available), 'soft' adds a subtitle track. Run on mix_dub's output. assOnly writes .ass + bilingual .srt only.",
+        long: true,
+        inputSchema: {
+          type: 'object',
+          required: ['videoPath', 'outputPath', 'primary'],
+          properties: {
+            videoPath: { type: 'string' },
+            outputPath: { type: 'string' },
+            primary: { description: 'lines array | manifest/script .json | .srt/.vtt path' },
+            secondary: { description: 'same forms as primary; optional' },
+            timing: { type: 'string', enum: ['dub', 'slot'] },
+            mode: { type: 'string', enum: ['hard', 'soft'] },
+            layout: { type: 'string', enum: ['stack', 'split'] },
+            primarySize: { type: 'number' },
+            secondarySize: { type: 'number' },
+            font: { type: 'string' },
+            assOnly: { type: 'boolean' }
+          }
+        },
+        run: async (a) => {
+          const timing = a.timing === 'slot' ? 'slot' : 'dub'
+          const load = (v: unknown): { start: number; end: number; text: string }[] => {
+            if (Array.isArray(v)) return (v as Json[]).map((x) => ({ start: Number(x.start) || 0, end: Number(x.end) || 0, text: String(x.text || '') }))
+            if (typeof v !== 'string' || !v.trim()) return []
+            const p = this.checkPath(v)
+            if (/\.json$/i.test(p)) {
+              const m = JSON.parse(fs.readFileSync(p, 'utf-8')) as { items?: Json[]; lines?: Json[] }
+              return (m.items || m.lines || [])
+                .filter((x) => x.ok !== false && Number.isFinite(Number(x.start)))
+                .map((x) => {
+                  const s = Number(x.start)
+                  const fit = x.fit as Json | undefined
+                  const dur = Number(fit?.actual) || Number(x.duration) || 0
+                  const e = timing === 'dub' && dur > 0 ? s + dur : Number(x.end) || s + dur
+                  return { start: s, end: e, text: String(x.text || '') }
+                })
+            }
+            return parseSubtitleFile(p)
+          }
+          const prim = load(a.primary)
+          if (!prim.length) throw new Error('primary has no lines')
+          const sec = load(a.secondary)
+          // Pair each primary cue with the secondary cue of largest time overlap, then cut
+          // long cues so a whole paragraph never sits on screen at once.
+          const paired: BiCue[] = prim.map((p) => {
+            let best = ''
+            let bestOv = 0
+            for (const s of sec) {
+              const ov = Math.min(p.end, s.end) - Math.max(p.start, s.start)
+              if (ov > bestOv) {
+                bestOv = ov
+                best = s.text
+              }
+            }
+            return { start: p.start, end: p.end, primary: p.text, secondary: best || undefined }
+          })
+          const cues = splitLongCues(paired, Math.max(8, Number(h.config().subtitle.maxChars) || 18))
+          const style = {
+            layout: a.layout === 'split' ? ('split' as const) : ('stack' as const),
+            primarySize: Number(a.primarySize) || undefined,
+            secondarySize: Number(a.secondarySize) || undefined,
+            font: str(a.font)
+          }
+          const outputPath = this.checkPath(String(a.outputPath || ''))
+          if (a.assOnly === true) {
+            const stem = outputPath.replace(/\.[^.\\/]+$/, '')
+            fs.mkdirSync(path.dirname(outputPath), { recursive: true })
+            await writeAss(h.config().engineRoot, this.checkPath(String(a.videoPath || '')), cues, `${stem}.ass`, style)
+            fs.writeFileSync(`${stem}.bilingual.srt`, buildBilingualSrt(cues), 'utf-8')
+            return { assPath: `${stem}.ass`, srtPath: `${stem}.bilingual.srt`, cues: cues.length }
+          }
+          const r = await burnSubtitles(h.config().engineRoot, this.checkPath(String(a.videoPath || '')), cues, outputPath, a.mode === 'soft' ? 'soft' : 'hard', style)
+          return { ...r, cues: cues.length, paired: cues.filter((c) => c.secondary).length }
         }
       },
       {
@@ -705,7 +890,7 @@ export class McpTools {
           h
             .history()
             .slice(0, Math.max(1, Math.min(200, Number(a.limit) || 20)))
-            .map((e) => ({ id: e.id, text: e.text, filePath: e.filePath, duration: e.duration, voice: e.voiceName, seed: e.seed, createdAt: e.createdAt }))
+            .map((e) => ({ id: e.id, text: e.text, filePath: e.filePath, duration: e.duration, voice: e.voiceName, seed: e.seed, params: e.params || null, createdAt: e.createdAt }))
       },
       {
         name: 'job_status',
@@ -757,12 +942,16 @@ export const MCP_PROMPTS = [
     name: 'localize_video',
     description: 'Translate and re-dub a video: extract, transcribe, translate, synthesize timed lines, mix.',
     text: `Localized dubbing:
-1. diarize {audioPath: video, numSpeakers if known} -> lines [{start,end,speaker,text}] + references per speaker.
-2. For each speaker: voice_from_span {sourcePath: video, start, end, name, transcript} using the best reference (skip if the user maps speakers to existing voices).
-3. Translate each line; keep spoken length close to its slot (CJK ~4-5 chars/s).
-4. synthesize_script {outputDir, lines:[{id, text, voice, start, end}]}. Lines are fitted to their window; for indices in "overflow" shorten the translation and regenerate those lines.
-5. mix_dub {basePath: video, items:[{audioPath, start}], outputPath: out.mp4, bgm:'duck'}.
-6. export_subtitle on lines if needed. Check speaker labels with the user when confidence is low.`
+0. studio_status / list_models: check separation.installed. If none, skip step 1 and use bgm:'duck' in step 6 (tell the user they can download a model on the 音频处理 page for cleaner results).
+1. separate_audio {sourcePath: video} -> {vocals, instrumental}. Cached; same timeline as the video.
+2. Transcript: if good captions exist (e.g. YouTube CC .srt/.vtt), import_subtitle {path}; otherwise diarize {audioPath: vocals, numSpeakers if known} -> items [{start,end,speaker,text}] + references per speaker. Diarize items are VAD chunks, NOT sentences.
+3. YOU segment: build_script {items, sentences:[{text}...], outputDir} where sentences = the transcript re-cut into complete natural sentences, verbatim and in order. The server computes start/end. Review lines with matched:false.
+4. For each speaker: voice_from_span {sourcePath: vocals, start, end, name, transcript} using the best diarize reference (skip if the user maps speakers to existing voices).
+5. Translate each script line; keep spoken length close to its slot (CJK ~4-5 chars/s). Keep the original text for subtitles.
+6. synthesize_script {outputDir, lines:[{id, text, voice, start, end}], params:{sampleSteps:8, fragmentInterval:0.15}}. Timed lines are not re-split (cut0) and are fitted to their window; for indices in "overflow" shorten the translation and regenerate those lines (same id/outputDir). Raise sampleSteps to 16 for lines that sound rough.
+7. mix_dub {basePath: video, manifestPath: <outputDir>/manifest.json, bedPath: instrumental, bgm:'replace', outputPath: dub.mp4}.
+8. burn_subtitles {videoPath: dub.mp4, outputPath: final.mp4, primary: <outputDir>/manifest.json, secondary: <outputDir>/script.json, mode:'hard'} for bilingual subtitles (mode 'soft' if the user wants a toggleable track).
+9. unload_models once at the end. Check speaker labels with the user when confidence is low.`
   },
   {
     name: 'build_voice_library',

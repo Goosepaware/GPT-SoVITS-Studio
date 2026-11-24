@@ -20,10 +20,11 @@ const INSTRUCTIONS = [
   'Local GPT-SoVITS v5turbo TTS studio (runs on this PC, GPU queue shared with the app).',
   'Voices: list_voices -> synthesize (one text) or synthesize_script (many lines, manifest.json).',
   'New voices: create_voice from a clean 3-10 s clip, or voice_from_span from a diarize reference.',
-  'Long tools (synthesize*, transcribe, diarize, create_voice, mix_dub, preview_segments) return a jobId if not done within `wait` s; then call job_status {jobId, wait}. Progress notifications are sent when a progressToken is given.',
+  'Long tools (synthesize*, transcribe, diarize, create_voice, separate_audio, mix_dub, burn_subtitles, preview_segments) return a jobId if not done within `wait` s; then call job_status {jobId, wait}. Progress notifications are sent when a progressToken is given.',
   'VRAM: models stay loaded between calls for speed. Do not unload during a multi-step task; call unload_models once the whole task is done (or when the user asks).',
   'Fix single bad sentences: list_segments -> preview_segments -> commit_segment (revert_edits to undo).',
-  'Dubbing: diarize -> translate -> synthesize_script with start/end -> mix_dub. Subtitles: export_subtitle.',
+  'Synthesis params: agent default sampleSteps 8 (adjust 4-32 as needed); fragmentInterval = pause between sentences inside one line.',
+  'Dubbing: separate_audio -> diarize (or import_subtitle) -> build_script (you segment sentences, server times them) -> translate -> synthesize_script with start/end -> mix_dub bgm:replace -> burn_subtitles (bilingual). See prompt localize_video.',
   'Paths must be absolute local paths. See prompts for full workflows.'
 ].join('\n')
 

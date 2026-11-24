@@ -15,9 +15,33 @@ export interface AppConfig {
   mcp: McpConfig
   /** What the window close button does: ask each time, hide to tray, or quit. */
   closeAction: CloseAction
+  /** HuggingFace download source for optional models. */
+  hfSource?: 'official' | 'mirror'
 }
 
 export type CloseAction = 'ask' | 'tray' | 'quit'
+
+export interface SepModelInfo {
+  id: string
+  label: string
+  note: string
+  size: number
+  installed: boolean
+  path: string
+  downloading: { received: number; total: number } | null
+}
+
+export interface SepResult {
+  vocals: string
+  instrumental: string
+  model: string
+  sourcePath: string
+  cached: boolean
+}
+
+export type SepEvent =
+  | { kind: 'download'; id: string; received: number; total: number }
+  | { kind: 'separate'; current: number; total: number; label: string }
 
 export type AsrModelId = 'sensevoice'
 
@@ -385,6 +409,16 @@ export interface AppApi {
     diarize: (src: string, opts?: { numSpeakers?: number; language?: string; threshold?: number }) => Promise<DiarizeResult>
     voiceFromSpan: (src: string, start: number, end: number, name: string, transcript?: string, lang?: string) => Promise<Voice>
     saveScript: (src: string, lines: unknown[]) => Promise<string | null>
+  }
+  sep: {
+    models: () => Promise<SepModelInfo[]>
+    download: (id: string) => Promise<SepModelInfo[]>
+    cancelDownload: (id: string) => Promise<void>
+    remove: (id: string) => Promise<SepModelInfo[]>
+    separate: (src: string, model?: string) => Promise<SepResult>
+    cancel: () => Promise<void>
+    exportTo: (result: SepResult) => Promise<string | null>
+    onEvent: (cb: (e: SepEvent) => void) => () => void
   }
   segments: {
     list: (audioPath: string) => Promise<{ timing: SegTiming; state: SegEditState }>

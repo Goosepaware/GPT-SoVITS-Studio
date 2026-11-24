@@ -104,7 +104,7 @@ export function scanModels(engineRoot: string): ModelCatalog {
     asr: {
       sensevoice: asrOption('sensevoice', sensevoiceDir, 'SenseVoice · 快速'),
       vad: asrOption('vad', vadDir, 'FSMN-VAD'),
-      spk: asrOption('vad', spkDir, 'CAM++ 说话人')
+      spk: asrOption('spk', spkDir, 'CAM++ 说话人')
     }
   }
 }

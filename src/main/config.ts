@@ -28,7 +28,8 @@ export function defaultConfig(engineRoot: string, dataRoot: string): AppConfig {
     half: true,
     subtitle: defaultSubtitleConfig(),
     mcp: { enabled: false, port: 39281, token: randomToken(), pathAllowlist: [] },
-    closeAction: 'ask'
+    closeAction: 'ask',
+    hfSource: 'mirror'
   }
 }
 
@@ -94,7 +95,8 @@ export function loadConfig(): AppConfig {
       half: raw.half !== false,
       subtitle: mergeSubtitle(raw.subtitle),
       mcp: mergeMcp(raw.mcp, fallback.mcp),
-      closeAction: raw.closeAction === 'tray' || raw.closeAction === 'quit' ? raw.closeAction : 'ask'
+      closeAction: raw.closeAction === 'tray' || raw.closeAction === 'quit' ? raw.closeAction : 'ask',
+      hfSource: raw.hfSource === 'official' ? 'official' : 'mirror'
     }
     delete (merged as Partial<StoredConfig>).version
     if (!merged.engineRoot || !isEngineRoot(merged.engineRoot)) {

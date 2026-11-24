@@ -3,9 +3,11 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { ffmpegPath, getDuration, run } from './media'
+import { readWav, writeWav } from './segmentEdit'
 
 async function ff(engineRoot: string, args: string[], what: string): Promise<void> {
-  const r = await run(ffmpegPath(engineRoot), ['-y', '-hide_banner', '-loglevel', 'error', ...args])
+  const bin = ffmpegPath(engineRoot)
+  const r = await run(bin, ['-y', '-hide_banner', '-loglevel', 'error', ...args], 20 * 60 * 1000)
   if (r.code !== 0) throw new Error(`${what}失败: ${r.stderr.slice(-600)}`)
 }
 
@@ -99,39 +101,109 @@ export async function mixDub(
   base: string,
   items: MixItem[],
   outputPath: string,
-  bgm: 'keep' | 'duck' | 'remove' = 'duck'
+  bgm: 'keep' | 'duck' | 'remove' | 'replace' = 'duck',
+  /** For bgm 'replace': separated instrumental used as the bed under the dub. */
+  bedPath?: string
 ): Promise<string> {
   if (!fs.existsSync(base)) throw new Error(`原始文件不存在: ${base}`)
   if (!items.length) throw new Error('没有配音片段')
+  if (bgm === 'replace' && (!bedPath || !fs.existsSync(bedPath))) throw new Error('bgm=replace 需要伴奏文件 bedPath（先做人声分离）')
   fs.mkdirSync(path.dirname(outputPath), { recursive: true })
   const total = await getDuration(engineRoot, base)
-  const inputs: string[] = ['-i', base]
-  const filters: string[] = []
-  items.forEach((it, i) => {
-    inputs.push('-i', it.audioPath)
-    const ms = Math.max(0, Math.round(it.start * 1000))
-    filters.push(`[${i + 1}:a]aresample=48000,aformat=channel_layouts=stereo,volume=${(it.gain ?? 1).toFixed(3)},adelay=${ms}|${ms}[d${i}]`)
-  })
-  const dubs = items.map((_, i) => `[d${i}]`).join('')
-  // Older bundled ffmpeg has no `normalize` option on amix, so compensate the
-  // 1/N attenuation it applies with a matching volume boost.
-  filters.push(
-    `${dubs}amix=inputs=${items.length}:dropout_transition=0,volume=${items.length},apad,atrim=0:${total.toFixed(3)}[dub]`
-  )
-  if (bgm === 'remove') {
-    filters.push('[dub]anull[out]')
-  } else {
-    filters.push('[0:a]aresample=48000,aformat=channel_layouts=stereo[orig]')
-    if (bgm === 'duck') {
-      filters.push('[dub]asplit=2[dub1][sc]')
-      filters.push('[orig][sc]sidechaincompress=threshold=0.02:ratio=8:attack=20:release=300[ducked]')
-      filters.push('[ducked][dub1]amix=inputs=2:dropout_transition=0,volume=2[out]')
-    } else {
-      filters.push('[orig][dub]amix=inputs=2:dropout_transition=0,volume=2[out]')
+  if (total <= 0) throw new Error('无法读取原始文件时长')
+  const rate = 48000
+  const frames = Math.max(1, Math.round(total * rate))
+
+  // ffmpeg is only used for decoding to PCM16 48k stereo; the mix itself is done on samples.
+  const tempDir = path.join(path.dirname(outputPath), '.mix-tmp')
+  fs.mkdirSync(tempDir, { recursive: true })
+  const decode = async (src: string, name: string): Promise<Float32Array> => {
+    const out = path.join(tempDir, `${name}.wav`)
+    await ff(engineRoot, ['-i', src, '-vn', '-ac', '2', '-ar', String(rate), '-c:a', 'pcm_s16le', out], '解码音频')
+    return toStereo(readWav(out))
+  }
+
+  const dub = new Float32Array(frames * 2)
+  const active = new Uint8Array(frames)
+  for (const it of items) {
+    const src = await decode(it.audioPath, `item-${path.basename(it.audioPath, path.extname(it.audioPath))}`)
+    const gain = it.gain ?? 1
+    const offset = Math.max(0, Math.round(it.start * rate)) * 2
+    for (let i = 0; i < src.length; i++) {
+      const at = offset + i
+      if (at >= dub.length) break
+      dub[at] += src[i] * gain
+      if ((i & 1) === 0 && Math.abs(src[i]) > 0.01) active[at >> 1] = 1
     }
   }
-  const isVideo = /\.(mp4|mkv|mov|webm)$/i.test(outputPath)
-  const tail = isVideo ? ['-map', '0:v?', '-map', '[out]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-shortest'] : ['-map', '[out]', '-c:a', 'pcm_s16le']
-  await ff(engineRoot, [...inputs, '-filter_complex', filters.join(';'), ...tail, outputPath], '混音')
+
+  const bed = bgm === 'replace' ? await decode(bedPath as string, 'bed') : bgm === 'remove' ? new Float32Array(frames * 2) : await decode(base, 'base')
+  const mixed = new Float32Array(frames * 2)
+  const envelope = duckEnvelope(active, rate)
+  for (let f = 0; f < frames; f++) {
+    const g = bgm === 'duck' ? envelope[f] : 1
+    mixed[f * 2] = bed[f * 2] * g + dub[f * 2]
+    mixed[f * 2 + 1] = bed[f * 2 + 1] * g + dub[f * 2 + 1]
+  }
+  let peak = 0
+  for (let i = 0; i < mixed.length; i++) peak = Math.max(peak, Math.abs(mixed[i]))
+  const scale = peak > 0.995 ? 0.995 / peak : 1
+  const pcm = new Int16Array(mixed.length)
+  for (let i = 0; i < mixed.length; i++) pcm[i] = Math.max(-32768, Math.min(32767, Math.round(mixed[i] * scale * 32767)))
+
+  const mixedPath = path.join(tempDir, 'mix.wav')
+  writeWav(mixedPath, { sampleRate: rate, channels: 2, samples: pcm })
+
+  try {
+    if (/\.(mp4|mkv|mov|webm)$/i.test(outputPath)) {
+      await ff(engineRoot, ['-i', base, '-i', mixedPath, '-map', '0:v?', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-shortest', outputPath], '混音')
+    } else {
+      await ff(engineRoot, ['-i', mixedPath, '-c:a', 'pcm_s16le', outputPath], '混音')
+    }
+  } finally {
+    for (const name of fs.readdirSync(tempDir)) {
+      try {
+        fs.rmSync(path.join(tempDir, name))
+      } catch {
+        // ignore
+      }
+    }
+    try {
+      fs.rmdirSync(tempDir)
+    } catch {
+      // ignore
+    }
+  }
   return outputPath
+}
+
+/** Stereo float samples from our PCM16 reader. */
+function toStereo(w: { channels: number; samples: Int16Array }): Float32Array {
+  const out = new Float32Array((w.samples.length / w.channels) * 2)
+  for (let f = 0, n = out.length / 2; f < n; f++) {
+    if (w.channels === 1) {
+      const v = w.samples[f] / 32768
+      out[f * 2] = v
+      out[f * 2 + 1] = v
+    } else {
+      out[f * 2] = w.samples[f * w.channels] / 32768
+      out[f * 2 + 1] = w.samples[f * w.channels + 1] / 32768
+    }
+  }
+  return out
+}
+
+/** Sidechain-style gain: pull the bed down ~9 dB while a dub line is playing, 20 ms attack / 300 ms release. */
+function duckEnvelope(active: Uint8Array, rate: number): Float32Array {
+  const out = new Float32Array(active.length)
+  const attack = 1 / (0.02 * rate)
+  const release = 1 / (0.3 * rate)
+  const low = 0.35
+  let g = 1
+  for (let f = 0; f < active.length; f++) {
+    const target = active[f] ? low : 1
+    g += (target - g) * (target < g ? attack : release)
+    out[f] = g
+  }
+  return out
 }

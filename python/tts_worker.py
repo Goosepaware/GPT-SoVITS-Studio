@@ -283,7 +283,7 @@ class TtsWorker(WorkerBase):
                 "batch_threshold": 0.75,
                 "split_bucket": False,
                 "speed_factor": float(params["speed"]),
-                "fragment_interval": 0.0,
+                "fragment_interval": 0.0,  # gaps are inserted by us when re-assembling (timing.gap)
                 "parallel_infer": True,
                 "repetition_penalty": float(params["repetitionPenalty"]),
                 "sample_steps": int(params["sampleSteps"]),

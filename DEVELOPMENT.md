@@ -158,8 +158,49 @@ node $env:TEMP\\seg-test.mjs                                # 分段替换 / 撤
   `configuration.json`），来自 ModelScope `iic/speech_campplus_sv_zh-cn_16k-common`。
 - `src/main/dub.ts`：`extractAudio` / `cutClip` / `atempo` / `fitLine` / `mixDub`，全部走引擎自带的 ffmpeg。
   时长适配顺序：默认语速 → 0.85–1.15 重生成 → atempo ±10% → 标 `overflow`。
-- 混音 `bgm`：`keep`（原声+配音）、`duck`（配音时压低原声）、`remove`（只留配音，非真正人声分离）。
-  输出 `.mp4/.mkv` 时复制原视频流。
+- 混音 `bgm`：`replace`（分离出的伴奏 + 配音，推荐）、`keep`（原声+配音）、`duck`（配音时压低原声）、
+  `remove`（只留配音）。输出 `.mp4/.mkv` 时复制原视频流。
+- **混音在 Node 里按采样点完成**，ffmpeg 只负责把原片/背景轨/每段配音解码成 48k 立体声 PCM16，
+  最后再封装一次。原因：自带 ffmpeg 的 `amix` 遇到多个带 `adelay` 偏移的输入会死锁
+  （2 段以上必然卡住），换成滤镜方案无论怎么调参数都不可靠。`duck` 用逐采样增益包络
+  （20ms 起、300ms 放、约 -9dB）模拟侧链；峰值超 0.995 时整体归一化。
+- 所有 ffmpeg 调用带 20 分钟超时（`media.ts run()`），超时会 taskkill 并把命令行写进错误信息。
+
+## 人声 / 背景分离
+
+- 模型：UVR MDX-Net ONNX，下载自 HF `seanghay/uvr_models`（`Kim_Vocal_2.onnx` 人声优先，
+  `UVR-MDX-NET-Inst_HQ_3.onnx` 伴奏优先），约 64MB，存在 `engine/models/separation/`。
+  设置里的 `hfSource` 决定走 `huggingface.co` 还是 `hf-mirror.com`；下载支持断点续传（`.part`）。
+- `python/separate.py`：一次性进程（跑完即退出，显存随之释放），STFT 分块推理 + iSTFT。
+  `dim_f` / `dim_t` 直接从 ONNX 输入形状读出，`n_fft = (dim_f-1)*2`，避免手填参数出错。
+  主输出是模型预测的那一路，另一路用“原音 - 主输出”得到，所以两条轨相加等于原音。
+- `src/main/separation.ts`：模型表、下载、缓存（按源文件 + 模型哈希）、CPU/GPU 回退（CUDA → DML → CPU）。
+- 界面「音频处理」页：选模型 → 拖入视频/音频 → 分离 → 两条轨试听/导出。
+- MCP：`separate_audio` 工具；`diarize` / `voice_from_span` 支持 `useVocals`；
+  `mix_dub` 支持 `bgm:"replace"` + `bedPath`，也支持直接读 `synthesize_script` 的 `manifestPath`。
+
+## 双语字幕与烧录
+
+- `python/separate.py` 之后的一切都在主进程做。`src/main/burn.ts`：
+  - `buildAss`：两种样式，`Primary`（译文，底部大字）和 `Secondary`（原文，小字叠在主行上方，
+    `layout:'split'` 时放到画面顶部）。字号按视频实际高度换算（主行 5.2%、副行 3.5%），
+    所以 360p 预览和 1080p 导出的观感一致。
+  - `splitLongCues`：一句太长时按标点切成多条（默认 ≤18 字，跟设置里的 `subtitle.maxChars` 同步），
+    原文行单独占整段，保证两种语言都在。
+  - `parseSubtitleFile`：读 srt / vtt（剥标签、合并 YouTube 滚动重复行），供 `import_subtitle` 用。
+  - `alignSentences`：AI 切好的句子按字符回填时间。先做去标点/大小写的精确匹配；
+    不中时用首尾各 4 字符锚定，容忍 ASR 错误（`patta pixel` → `PetaPixel`）；
+    仍不中的标 `matched:false` 并记入 `unmatched`。
+- 烧录编码器：自带 ffmpeg 的 NVENC 太旧（新驱动下报 `unsupported param`），也没有 libx264，
+  所以按 `h264_mf`（MediaFoundation）→ `libx264` → `mpeg4` 依次尝试；码率按分辨率给
+  （1080p 12M / 720p 6M / 更低 3M）。软字幕走 `-c:s ass`（mkv）或 `mov_text`（mp4）。
+
+## AI 切句与合成参数
+
+- `build_script`：AI 提交逐字原文切好的句子，服务端算时间，避免 AI 自己编时间戳。
+- 带 `start/end` 的译制行在 `synthesize_script` 里默认 `cut0`（不再行内二次切句），
+  行内停顿由 `fragmentInterval` 控制。
+- Agent 默认采样步数 8（界面仍默认 4），可按调用或按行覆盖；`list_history` 会带 `params`。
 
 ## 构建便携版
 

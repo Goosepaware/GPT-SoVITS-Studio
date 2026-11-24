@@ -133,6 +133,11 @@ TTS + SenseVoice 在 8GB 显卡上也很紧。默认切换引擎会自动卸载�
 
 然后在“模型与显存”页点“刷新模型列表”，合成页即可选择。
 
+人声 / 背景分离（可选，默认不附带）
+  engine/models/separation/Kim_Vocal_2.onnx            人声优先，约 64MB
+  engine/models/separation/UVR-MDX-NET-Inst_HQ_3.onnx  伴奏优先，约 64MB
+  在“音频处理”页点“下载”即可，可选 HuggingFace 官方或 hf-mirror 镜像。
+
 数据位置
 --------
   data/outputs    生成结果与 .timing.json
