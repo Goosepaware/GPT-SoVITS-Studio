@@ -185,11 +185,11 @@ node $env:TEMP\\seg-test.mjs                                # 分段替换 / 撤
 ## 双语字幕与烧录
 
 - `python/separate.py` 之后的一切都在主进程做。`src/main/burn.ts`：
-  - `buildAss`：两种样式，`Primary`（译文，底部大字）和 `Secondary`（原文，小字叠在主行上方，
-    `layout:'split'` 时放到画面顶部）。字号按视频实际高度换算（主行 5.2%、副行 3.5%），
-    所以 360p 预览和 1080p 导出的观感一致。
-  - `splitLongCues`：一句太长时按标点切成多条（默认 ≤18 字，跟设置里的 `subtitle.maxChars` 同步），
-    原文行单独占整段，保证两种语言都在。
+  - `buildAss`：`Primary`（译文）在上、`Secondary`（原文）在下，都在画面底部；字号按视频实际高度换算
+    （主行 5.2%、副行 3.5%），360p 预览和 1080p 导出的观感一致。`secondaryOnTop` 可换回原文在上，
+    `layout:'split'` 把原文放到画面顶部。
+  - `splitLongCues`：按标点把长句切成 ≤`subtitle.maxChars` 的短句，**两种语言用同一组时间分数切**，
+    英文切点会吸附到词边界，所以每条字幕都带对应的一小段原文，不会丢词或重复。
   - `parseSubtitleFile`：读 srt / vtt（剥标签、合并 YouTube 滚动重复行），供 `import_subtitle` 用。
   - `alignSentences`：AI 切好的句子按字符回填时间。先做去标点/大小写的精确匹配；
     不中时用首尾各 4 字符锚定，容忍 ASR 错误（`patta pixel` → `PetaPixel`）；

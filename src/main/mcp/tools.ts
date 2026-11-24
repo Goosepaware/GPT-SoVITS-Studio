@@ -737,7 +737,7 @@ export class McpTools {
       {
         name: 'burn_subtitles',
         description:
-          "Add bilingual subtitles to a video. primary = translated lines (large, bottom), secondary = original lines (small, above; layout 'split' puts it at the top). Each is lines [{start,end,text}], a manifest.json/script.json path, or an .srt/.vtt path. For a synthesize_script manifest, timing 'dub' (default) shows start..start+dub duration, 'slot' uses the original window. mode 'hard' burns in (re-encode, NVENC if available), 'soft' adds a subtitle track. Run on mix_dub's output. assOnly writes .ass + bilingual .srt only.",
+          "Add bilingual subtitles to a video. primary = translated lines, secondary = original lines. Default layout 'stack' puts the translation above the original at the bottom (set secondaryOnTop to swap); layout 'split' puts the original at the top of the frame. Each is lines [{start,end,text}], a manifest.json/script.json path, or an .srt/.vtt path. Long lines are cut at punctuation, and both languages are cut over the same fractions so every cue carries the matching slice of each. For a synthesize_script manifest, timing 'dub' (default) shows start..start+dub duration, 'slot' uses the original window. mode 'hard' burns in (re-encode), 'soft' adds a subtitle track. assOnly writes .ass + bilingual .srt only.",
         long: true,
         inputSchema: {
           type: 'object',
@@ -750,6 +750,7 @@ export class McpTools {
             timing: { type: 'string', enum: ['dub', 'slot'] },
             mode: { type: 'string', enum: ['hard', 'soft'] },
             layout: { type: 'string', enum: ['stack', 'split'] },
+            secondaryOnTop: { type: 'boolean', description: 'stack layout only: put the original above the translation' },
             primarySize: { type: 'number' },
             secondarySize: { type: 'number' },
             font: { type: 'string' },
@@ -796,6 +797,7 @@ export class McpTools {
           const cues = splitLongCues(paired, Math.max(8, Number(h.config().subtitle.maxChars) || 18))
           const style = {
             layout: a.layout === 'split' ? ('split' as const) : ('stack' as const),
+            secondaryOnTop: a.secondaryOnTop === true,
             primarySize: Number(a.primarySize) || undefined,
             secondarySize: Number(a.secondarySize) || undefined,
             font: str(a.font)

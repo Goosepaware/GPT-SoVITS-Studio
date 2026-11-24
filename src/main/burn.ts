@@ -16,8 +16,10 @@ export interface SubStyle {
   font?: string
   primarySize?: number
   secondarySize?: number
-  /** 'stack' = both at bottom (secondary above primary); 'split' = secondary at top of screen. */
+  /** 'stack' = both at the bottom (translation above, original below); 'split' = original at the top of the screen. */
   layout?: 'stack' | 'split'
+  /** Put the original above the translation instead of below it. */
+  secondaryOnTop?: boolean
   marginV?: number
   /** Video height in pixels; sizes are relative to it (default 1080). */
   playResY?: number
@@ -78,26 +80,82 @@ function chunk(text: string, maxChars: number): string[] {
 }
 
 /**
+ * Cut indices for `text` at the given cumulative weight fractions, snapped to word
+ * boundaries for latin text, so slices never lose or duplicate a word.
+ */
+function sliceByFractions(text: string, fractions: number[]): string[] {
+  const chars = [...text]
+  const w = chars.map((ch) => (/[\u0000-\u00ff]/.test(ch) ? 0.5 : 1))
+  const total = w.reduce((a, b) => a + b, 0)
+  if (!total) return fractions.slice(0, -1).map(() => '')
+  const cum: number[] = []
+  let acc = 0
+  for (const x of w) {
+    acc += x
+    cum.push(acc)
+  }
+  const at = (f: number): number => {
+    if (f <= 0) return 0
+    if (f >= 1) return chars.length
+    const target = total * f
+    const i = cum.findIndex((c) => c >= target)
+    return i < 0 ? chars.length : i + 1
+  }
+  let cuts = fractions.map((f, i) => (i === 0 ? 0 : i === fractions.length - 1 ? chars.length : at(f)))
+  const latin = w.every((x) => x === 0.5)
+  if (latin) {
+    cuts = cuts.map((c, i) => {
+      if (i === 0 || i === cuts.length - 1) return c
+      let left = c
+      let right = c
+      for (let k = 0; k < 12 && left > 0; k++, left--) if (chars[left - 1] === ' ') break
+      for (let k = 0; k < 12 && right < chars.length; k++, right++) {
+        if (chars[right] === ' ') {
+          right++
+          break
+        }
+      }
+      return Math.abs(c - left) <= Math.abs(right - c) ? left : right
+    })
+    for (let i = 1; i < cuts.length; i++) if (cuts[i] <= cuts[i - 1]) cuts[i] = Math.min(chars.length, cuts[i - 1] + 1)
+  }
+  const out: string[] = []
+  for (let i = 0; i + 1 < cuts.length; i++) out.push(chars.slice(cuts[i], cuts[i + 1]).join('').trim())
+  return out
+}
+
+/**
  * Split long cues so nothing stays on screen for a whole paragraph.
- * The secondary line keeps the full span as its own event, so both languages stay in sync.
+ * Both languages are cut over the same fractions, so every cue carries the matching
+ * slice of the original line and the two stay in sync.
  */
 export function splitLongCues(cues: BiCue[], maxChars = 18): BiCue[] {
   const out: BiCue[] = []
   for (const c of cues) {
-    const parts = chunk(c.primary || '', maxChars)
-    if (parts.length <= 1) {
-      out.push({ ...c, secondary: c.secondary?.trim() || undefined })
+    const span = c.end - c.start
+    const primary = c.primary?.trim() || ''
+    const secondary = c.secondary?.trim() || ''
+    const parts = chunk(primary, maxChars)
+    if (parts.length <= 1 || span <= 0) {
+      out.push({ start: c.start, end: c.end, primary, secondary: secondary || undefined })
       continue
     }
     const total = parts.reduce((a, p) => a + weight(p), 0)
+    const fractions: number[] = [0]
     let acc = 0
     for (const p of parts) {
-      const s = c.start + ((c.end - c.start) * acc) / total
       acc += weight(p)
-      const e = c.start + ((c.end - c.start) * acc) / total
-      out.push({ start: s, end: e, primary: p })
+      fractions.push(acc / total)
     }
-    if (c.secondary?.trim()) out.push({ start: c.start, end: c.end, primary: '', secondary: c.secondary })
+    const secParts = secondary ? sliceByFractions(secondary, fractions) : []
+    parts.forEach((p, i) => {
+      out.push({
+        start: c.start + span * fractions[i],
+        end: c.start + span * fractions[i + 1],
+        primary: p,
+        secondary: secParts[i]?.trim() || undefined
+      })
+    })
   }
   return out
 }
@@ -124,8 +182,13 @@ export function buildAss(cues: BiCue[], style: SubStyle = {}): string {
   const p2 = style.secondarySize || Math.round(resY * 0.035)
   const mv = style.marginV ?? Math.round(resY * 0.043)
   const split = style.layout === 'split'
+  const secondaryOnTop = style.secondaryOnTop === true
+  // stack (default): translation above, original below, both bottom-aligned.
+  // stack + secondaryOnTop: the old order (original above, translation below).
+  // split: original at the top of the frame, translation at the bottom.
+  const priMV = split || secondaryOnTop ? mv : mv + Math.round(p2 * 1.5)
+  const secMV = split ? mv : secondaryOnTop ? mv + Math.round(p * 1.5) : mv
   const secAlign = split ? 8 : 2
-  const secMargin = split ? mv : mv + Math.round(p * 1.25)
   const head = [
     '[Script Info]',
     'ScriptType: v4.00+',
@@ -136,8 +199,8 @@ export function buildAss(cues: BiCue[], style: SubStyle = {}): string {
     '',
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    `Style: Primary,${font},${p},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,3,1,2,60,60,${mv},1`,
-    `Style: Secondary,${font},${p2},&H00D8D8D8,&H00D8D8D8,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2.4,1,${secAlign},60,60,${secMargin},1`,
+    `Style: Primary,${font},${p},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,3,1,2,60,60,${priMV},1`,
+    `Style: Secondary,${font},${p2},&H00D8D8D8,&H00D8D8D8,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2.4,1,${secAlign},60,60,${secMV},1`,
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text'
