@@ -488,6 +488,13 @@ export class McpTools {
           }
           const formats = this.formats(a.subtitleFormats)
           const manifest = path.join(outputDir, 'manifest.json')
+          // Re-running a subset of lines (fixes after "overflow") must not wipe the other lines.
+          let merged: Json[] = []
+          try {
+            if (fs.existsSync(manifest)) merged = (JSON.parse(fs.readFileSync(manifest, 'utf-8')).items || []) as Json[]
+          } catch {
+            merged = []
+          }
           const items: Json[] = []
           for (let i = 0; i < lines.length; i++) {
             if (job?.cancelRequested) break
@@ -502,7 +509,8 @@ export class McpTools {
                 // Timed dubbing line = one sentence already segmented by the agent: don't split again.
                 lp = { splitMethod: 'cut0', ...lp }
                 let last: Json = {}
-                const fit = await h.dub.fit(i, s1 - s0, Number(lp.speed) || 1, async (speed) => {
+                const lineIndex = Number(/^l?0*(\d+)$/.exec(id)?.[1] ?? i + 1) - 1
+                const fit = await h.dub.fit(Number.isFinite(lineIndex) ? lineIndex : i, s1 - s0, Number(lp.speed) || 1, async (speed) => {
                   last = await this.synthOne({ ...defaults, ...line, params: { ...lp, speed } }, { outputDir, fileName: id, voice: str(a.voice), formats })
                   return { filePath: String(last.filePath), duration: Number(last.duration) }
                 })
@@ -515,7 +523,9 @@ export class McpTools {
               items.push({ id, text: line.text, ok: false, error: error instanceof Error ? error.message : String(error) })
               if (a.stopOnError === true) break
             }
-            fs.writeFileSync(manifest, JSON.stringify({ outputDir, items }, null, 1), 'utf-8')
+            const rest = merged.filter((x) => !items.some((y) => y.id === x.id))
+            const all = [...rest, ...items].sort((x, y) => Number(x.start ?? 0) - Number(y.start ?? 0))
+            fs.writeFileSync(manifest, JSON.stringify({ outputDir, items: all }, null, 1), 'utf-8')
           }
           if (job) job.progress = `${items.length}/${lines.length}`
           const fitReport = items.filter((x) => x.fit).map((x) => x.fit)

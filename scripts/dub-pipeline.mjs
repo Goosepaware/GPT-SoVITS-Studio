@@ -121,6 +121,21 @@ if (cmd === 'status') {
   const [file, lang] = rest
   const r = await waitJob(await call('transcribe', { files: [file], language: lang || 'zh' }), 'transcribe')
   console.log(JSON.stringify(r).slice(0, 3000))
+} else if (cmd === 'build') {
+  const items = JSON.parse(fs.readFileSync(path.join(OUT, 'diarize.json'), 'utf-8')).result.items
+  const sentences = JSON.parse(fs.readFileSync(rest[0], 'utf-8')).sentences
+  const r = await call('build_script', { items, sentences: sentences.map((text) => ({ text })), outputDir: rest[1] })
+  const lines = r.lines || []
+  console.log(`lines=${lines.length} unmatched=${JSON.stringify(r.unmatched)} leftover=${JSON.stringify(r.leftover || '').slice(0, 60)}`)
+  for (const l of lines) console.log(`${l.id} ${l.start.toFixed(2)}-${l.end.toFixed(2)} ${l.matched ? ' ' : '!'} ${l.text}`)
+  save('build.json', r)
+} else if (cmd === 'burn') {
+  const [video, out, primary, secondary, mode] = rest
+  const r = await waitJob(
+    await call('burn_subtitles', { videoPath: video, outputPath: out, primary, secondary, mode: mode || 'hard' }),
+    'burn'
+  )
+  console.log(JSON.stringify(r, null, 2))
 } else if (cmd === 'mix') {
   const r = await waitJob(
     await call('mix_dub', { basePath: rest[0], manifestPath: rest[1], bedPath: rest[2], outputPath: rest[3], bgm: 'replace' }),

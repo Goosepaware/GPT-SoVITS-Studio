@@ -324,10 +324,21 @@ export function alignSentences(
         at = head
         len = tail + tailKey.length - head
       } else {
+        // Give up on this one but do NOT advance the cursor: a wrong guess would swallow
+        // the sentences after it. Times are filled in from the neighbours below.
         matched = false
         unmatched.add(i)
-        at = cursor
-        len = Math.min(key.length, flat.length - cursor)
+        const here = tl[Math.min(tl.length - 1, cursor)]
+        lines.push({
+          id: `${idPrefix}${String(lines.length + 1).padStart(3, '0')}`,
+          start: here.t0,
+          end: here.t0,
+          text: s.text.trim(),
+          speaker: s.speaker,
+          items: [here.item],
+          matched: false
+        })
+        return
       }
     }
     const a = tl[at]
@@ -349,6 +360,25 @@ export function alignSentences(
     })
     cursor = at + len
   })
+  // Unmatched sentences got a placeholder time; spread each run of them over the gap between neighbours.
+  const total = tl.length ? tl[tl.length - 1].t1 : 0
+  for (let i = 0; i < lines.length; ) {
+    if (lines[i].matched) {
+      i++
+      continue
+    }
+    let j = i
+    while (j + 1 < lines.length && !lines[j + 1].matched) j++
+    const from = i > 0 ? lines[i - 1].end : 0
+    const to = j + 1 < lines.length ? lines[j + 1].start : total
+    const n = j - i + 1
+    const span = Math.max(0.2 * n, to - from)
+    for (let k = 0; k < n; k++) {
+      lines[i + k].start = Math.round((from + (span * k) / n) * 1000) / 1000
+      lines[i + k].end = Math.round((from + (span * (k + 1)) / n) * 1000) / 1000
+    }
+    i = j + 1
+  }
   for (let i = 1; i < lines.length; i++) {
     if (lines[i].start < lines[i - 1].end) {
       const mid = Math.round(((lines[i].start + lines[i - 1].end) / 2) * 1000) / 1000

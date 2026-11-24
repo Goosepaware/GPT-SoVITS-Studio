@@ -125,14 +125,21 @@ export async function mixDub(
 
   const dub = new Float32Array(frames * 2)
   const active = new Uint8Array(frames)
-  for (const it of items) {
+  // Lines never overlap: a clip is cut (with a 30 ms fade) where the next line starts.
+  const ordered = [...items].sort((x, y) => x.start - y.start)
+  const fade = Math.round(0.03 * rate) * 2
+  for (let k = 0; k < ordered.length; k++) {
+    const it = ordered[k]
     const src = await decode(it.audioPath, `item-${path.basename(it.audioPath, path.extname(it.audioPath))}`)
     const gain = it.gain ?? 1
     const offset = Math.max(0, Math.round(it.start * rate)) * 2
-    for (let i = 0; i < src.length; i++) {
+    const nextStart = k + 1 < ordered.length ? ordered[k + 1].start : total
+    const room = Math.max(0, Math.round((nextStart - it.start) * rate)) * 2
+    const usable = Math.min(src.length, room, dub.length - offset)
+    for (let i = 0; i < usable; i++) {
       const at = offset + i
-      if (at >= dub.length) break
-      dub[at] += src[i] * gain
+      const tail = usable < src.length && i > usable - fade ? (usable - i) / fade : 1
+      dub[at] += src[i] * gain * tail
       if ((i & 1) === 0 && Math.abs(src[i]) > 0.01) active[at >> 1] = 1
     }
   }
