@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { HistoryEntry, Voice } from '@shared/types'
+import { sidecarPaths } from './subtitles'
 
 interface StoredHistory extends Omit<HistoryEntry, 'filePath'> {
   fileRel: string
@@ -172,7 +173,7 @@ export class Storage {
       try {
         const audioAbs = absolutePath(this.dataRoot, entry.fileRel)
         fs.rmSync(audioAbs, { force: true })
-        fs.rmSync(audioAbs.replace(/\.[^.\\/]+$/, '') + '.timing.json', { force: true })
+        for (const side of sidecarPaths(audioAbs)) fs.rmSync(side, { force: true })
       } catch {
         // ignore
       }
@@ -218,7 +219,7 @@ export class Storage {
       try {
         const audioAbs = absolutePath(this.dataRoot, entry.fileRel)
         fs.rmSync(audioAbs, { force: true })
-        fs.rmSync(audioAbs.replace(/\.[^.\\/]+$/, '') + '.timing.json', { force: true })
+        for (const side of sidecarPaths(audioAbs)) fs.rmSync(side, { force: true })
       } catch {
         // ignore
       }

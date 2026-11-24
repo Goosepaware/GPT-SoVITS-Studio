@@ -25,7 +25,30 @@ const api: AppApi = {
   revealPath: (target: string) => ipcRenderer.invoke('shell:reveal', target),
   exportMp3: (sourcePath: string) => ipcRenderer.invoke('audio:export-mp3', sourcePath),
   exportSubtitle: (sourcePath, format) => ipcRenderer.invoke('subtitle:export', sourcePath, format),
-  exportSubtitlesMany: (sourcePaths, format) => ipcRenderer.invoke('subtitle:export-many', sourcePaths, format),
+  exportSubtitlesMany: (sourcePaths, formats) => ipcRenderer.invoke('subtitle:export-many', sourcePaths, formats),
+  mcp: {
+    status: () => ipcRenderer.invoke('mcp:status'),
+    restart: () => ipcRenderer.invoke('mcp:restart'),
+    regenerateToken: () => ipcRenderer.invoke('mcp:regenerate-token'),
+    configureClient: (id: string) => ipcRenderer.invoke('mcp:configure-client', id),
+    snippet: (id: string) => ipcRenderer.invoke('mcp:snippet', id),
+    agentPrompt: () => ipcRenderer.invoke('mcp:agent-prompt'),
+    onActivity: (cb: (line: string) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, line: string): void => cb(line)
+      ipcRenderer.on('mcp:activity', listener)
+      return () => ipcRenderer.removeListener('mcp:activity', listener)
+    }
+  },
+  onDataChanged: (cb: (kind: 'history' | 'voices') => void) => {
+    const h = (): void => cb('history')
+    const v = (): void => cb('voices')
+    ipcRenderer.on('history:changed', h)
+    ipcRenderer.on('voices:changed', v)
+    return () => {
+      ipcRenderer.removeListener('history:changed', h)
+      ipcRenderer.removeListener('voices:changed', v)
+    }
+  },
   saveAsrResults: (payload: { items: AsrFileResult[]; format: 'list' | 'txt'; suggestedName: string }) =>
     ipcRenderer.invoke('asr:save-results', payload),
   tts: {

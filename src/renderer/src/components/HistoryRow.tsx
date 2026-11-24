@@ -57,10 +57,10 @@ export function HistoryRow({ entry, selected, selectMode, onToggle, onDelete, on
         )}
         <button
           className="icon-btn small"
-          title="导出字幕 (SRT)"
+          title="导出字幕（默认格式，可在设置中修改）"
           onClick={() =>
             void window.api
-              .exportSubtitle(entry.filePath, 'srt')
+              .exportSubtitle(entry.filePath)
               .then((file) => {
                 if (file) void window.api.revealPath(file)
               })

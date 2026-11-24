@@ -22,7 +22,13 @@ import { scanModels } from './models'
 import { getAppPaths, engineMissing, isEngineRoot, type AppPaths } from './paths'
 import { PythonWorker } from './pythonWorker'
 import { Storage } from './storage'
-import { hasTiming, writeSubtitle } from './subtitles'
+import { McpServer } from './mcp/server'
+import { McpTools, type ToolHost } from './mcp/tools'
+import { agentSetupPrompt, clientSnippet, configureClient, ensureBridge, listClients, type BridgeInfo } from './mcp/clients'
+import { randomToken } from './config'
+import { Menu, Tray, nativeImage } from 'electron'
+import type { McpStatus } from '@shared/types'
+import { SUBTITLE_EXT, hasTiming, subtitleFileName, writeSubtitle, writeSubtitles } from './subtitles'
 
 const execFileAsync = promisify(execFile)
 
@@ -241,6 +247,7 @@ function registerIpc(): void {
     config = next
     saveConfig(config)
     fs.mkdirSync(config.outputDir, { recursive: true })
+    void applyMcp()
     if (previousRoot !== config.engineRoot) {
       void ttsWorker?.unload('切换引擎目录')
       void asrWorker?.unload('切换引擎目录')
@@ -287,19 +294,21 @@ function registerIpc(): void {
 
   ipcMain.handle('audio:export-mp3', async (_event, sourcePath: string) => exportMp3(config.engineRoot, sourcePath))
 
-  ipcMain.handle('subtitle:export', async (_event, sourcePath: string, format: SubtitleFormat) => {
+  ipcMain.handle('subtitle:export', async (_event, sourcePath: string, format?: SubtitleFormat) => {
     if (!hasTiming(sourcePath)) throw new Error('这条记录没有时间轴（旧版本生成），请重新生成后再导出字幕')
-    const base = path.basename(sourcePath).replace(/\.[^.]+$/, '')
+    const fmt = format || config.subtitle.defaultFormat
+    const ext = SUBTITLE_EXT[fmt]
     const result = await dialog.showSaveDialog(mainWindow!, {
       title: '导出字幕',
-      defaultPath: path.join(path.dirname(sourcePath), `${base}.${format}`),
-      filters: [{ name: format.toUpperCase() + ' 字幕', extensions: [format] }]
+      defaultPath: path.join(path.dirname(sourcePath), subtitleFileName(sourcePath, fmt)),
+      filters: [{ name: fmt.toUpperCase(), extensions: [ext.split('.').pop() as string] }]
     })
     if (result.canceled || !result.filePath) return null
-    return writeSubtitle(sourcePath, result.filePath, format)
+    return writeSubtitle(sourcePath, result.filePath, fmt, config.subtitle)
   })
 
-  ipcMain.handle('subtitle:export-many', async (_event, sourcePaths: string[], format: SubtitleFormat) => {
+  ipcMain.handle('subtitle:export-many', async (_event, sourcePaths: string[], formats?: SubtitleFormat[]) => {
+    const fmts = formats && formats.length ? formats : [config.subtitle.defaultFormat]
     const result = await dialog.showOpenDialog(mainWindow!, { title: '选择字幕导出文件夹', properties: ['openDirectory', 'createDirectory'] })
     if (result.canceled || !result.filePaths[0]) return null
     const dir = result.filePaths[0]
@@ -310,8 +319,7 @@ function registerIpc(): void {
         skipped++
         continue
       }
-      const base = path.basename(src).replace(/\.[^.]+$/, '')
-      writeSubtitle(src, path.join(dir, `${base}.${format}`), format)
+      writeSubtitles(src, fmts, config.subtitle, dir)
       written++
     }
     return { dir, written, skipped }
@@ -365,39 +373,16 @@ function registerIpc(): void {
     if (ttsWorker) await ttsWorker.unload('手动卸载 TTS')
   })
 
-  ipcMain.handle('tts:synthesize', async (_event, options: Record<string, unknown>) => {
+  ipcMain.handle('tts:synthesize', (_event, options: Record<string, unknown>) => {
     const worker = ensureTtsWorker()
-    if (worker.status.state !== 'ready') {
+    if (worker.status.state !== 'ready' && worker.status.state !== 'busy') {
       throw new Error('TTS 模型尚未加载，请先点击“加载模型”')
     }
-    await unloadOther('tts', '开始生成')
-    lastActivity.tts = Date.now()
-    const outputPath = outputFile(String(options.text || ''))
-    const payload = { ...options, outputPath }
-    const result = await worker.request<TtsResult>('synthesize', payload, 60 * 60 * 1000)
-    const voiceId = String(options.voiceId || '')
-    const voice = voiceId ? storage.listVoices().find((item) => item.id === voiceId) : undefined
-    const historyEntry: HistoryEntry = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      filePath: result.filePath,
-      text: String(options.text || ''),
-      voiceName: voice?.name || '临时参考音频',
-      models: `${path.basename(String(options.sovitsPath || worker.status.models.sovits || 'v5turbo'))}`,
-      duration: result.duration,
-      createdAt: Date.now(),
-      seed: result.seed,
-      params: {
-        speed: options.speed,
-        sampleSteps: options.sampleSteps,
-        textLang: options.textLang,
-        promptLang: options.promptLang,
-        seed: result.seed
-      }
-    }
-    storage.addHistory(historyEntry)
-    result.historyId = historyEntry.id
-    return result
+    // UI jobs jump ahead of queued agent jobs.
+    return gpuQueue(() => doSynthesize(options), true)
   })
+
+  registerMcpIpc()
 
   ipcMain.handle('tts:cancel', () => {
     ttsWorker?.send('cancel')
@@ -557,13 +542,266 @@ async function createWindow(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------- GPU queue
+
+const queue: Array<{ run: () => Promise<void>; priority: boolean }> = []
+let queueBusy = false
+
+/** Serializes every GPU job (UI + agent). Priority jobs go before queued non-priority ones. */
+function gpuQueue<T>(task: () => Promise<T>, priority = false): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const item = { run: () => task().then(resolve, reject), priority }
+    const idx = priority ? queue.findIndex((q) => !q.priority) : -1
+    if (idx < 0) queue.push(item)
+    else queue.splice(idx, 0, item)
+    void pumpQueue()
+  })
+}
+
+async function pumpQueue(): Promise<void> {
+  if (queueBusy) return
+  queueBusy = true
+  try {
+    while (queue.length) await queue.shift()!.run().catch(() => undefined)
+  } finally {
+    queueBusy = false
+  }
+}
+
+// ------------------------------------------------------------- synthesis core
+
+async function ensureTtsLoaded(gptPath?: string, sovitsPath?: string): Promise<PythonWorker> {
+  const worker = ensureTtsWorker()
+  const catalog = scanModels(config.engineRoot)
+  const gpt = gptPath || worker.status.models.gpt || catalog.tts.gpt.find((m) => m.base)?.path || catalog.tts.gpt[0]?.path
+  const sovits = sovitsPath || worker.status.models.sovits || catalog.tts.sovits.find((m) => m.base)?.path || catalog.tts.sovits[0]?.path
+  if (!gpt || !sovits) throw new Error('未找到 v5turbo 模型')
+  await unloadOther('tts', 'agent 合成')
+  if (worker.status.state === 'ready' && worker.status.models.gpt === gpt && worker.status.models.sovits === sovits) return worker
+  await worker.request<EngineStatus>('load', { gptPath: gpt, sovitsPath: sovits, device: config.device, half: config.half }, 10 * 60 * 1000)
+  return worker
+}
+
+async function ensureAsrLoaded(): Promise<PythonWorker> {
+  const catalog = scanModels(config.engineRoot)
+  const selected = catalog.asr.sensevoice
+  const vad = catalog.asr.vad
+  if (!selected || !vad) throw new Error('SenseVoice / VAD 模型未找到')
+  await unloadOther('asr', 'agent 识别')
+  const worker = ensureAsrWorker()
+  if (worker.status.state === 'ready' && worker.status.models.asr === selected.path) return worker
+  await worker.request<EngineStatus>(
+    'load',
+    { model: 'sensevoice', modelPath: selected.path, vadPath: vad.path, device: config.device.startsWith('cuda') ? 'cuda' : 'cpu' },
+    10 * 60 * 1000
+  )
+  return worker
+}
+
+async function doSynthesize(options: Record<string, unknown>, outputOverride?: string, viaAgent = false): Promise<TtsResult> {
+  const worker = viaAgent
+    ? await ensureTtsLoaded(options.gptPath as string | undefined, options.sovitsPath as string | undefined)
+    : ensureTtsWorker()
+  if (worker.status.state !== 'ready') throw new Error('TTS 模型尚未加载，请先点击“加载模型”')
+  if (!viaAgent) await unloadOther('tts', '开始生成')
+  lastActivity.tts = Date.now()
+  const outputPath = outputOverride || outputFile(String(options.text || ''))
+  const result = await worker.request<TtsResult>('synthesize', { ...options, outputPath }, 60 * 60 * 1000)
+  const voiceId = String(options.voiceId || '')
+  const voice = voiceId ? storage.listVoices().find((item) => item.id === voiceId) : undefined
+  const historyEntry: HistoryEntry = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    filePath: result.filePath,
+    text: String(options.text || ''),
+    voiceName: (voice?.name || '临时参考音频') + (viaAgent ? ' · agent' : ''),
+    models: path.basename(String(options.sovitsPath || worker.status.models.sovits || 'v5turbo')),
+    duration: result.duration,
+    createdAt: Date.now(),
+    seed: result.seed,
+    params: { speed: options.speed, sampleSteps: options.sampleSteps, textLang: options.textLang, promptLang: options.promptLang, seed: result.seed }
+  }
+  storage.addHistory(historyEntry)
+  result.historyId = historyEntry.id
+  if (config.subtitle.autoExport && result.timingPath) {
+    try {
+      writeSubtitles(result.filePath, config.subtitle.autoFormats, config.subtitle)
+    } catch (error) {
+      result.warnings = [...(result.warnings || []), `自动输出字幕失败：${error instanceof Error ? error.message : String(error)}`]
+    }
+  }
+  if (viaAgent) send('history:changed', null)
+  return result
+}
+
+// ------------------------------------------------------------------------ MCP
+
+let mcpServer: McpServer | null = null
+let bridge: BridgeInfo | null = null
+let tray: Tray | null = null
+const headless = process.argv.includes('--headless')
+
+function mcpUrl(): string {
+  return `http://127.0.0.1:${config.mcp.port}/mcp`
+}
+
+/** In dev the exe is electron.exe, so the bridge also needs the app path to relaunch headless. */
+function ensureBridgeInfo(): BridgeInfo {
+  return ensureBridge(paths.dataRoot, app.getPath('exe'), paths.configFile, app.isPackaged ? undefined : app.getAppPath())
+}
+
+function mcpActivity(line: string): void {
+  try {
+    fs.mkdirSync(paths.logsDir, { recursive: true })
+    fs.appendFileSync(path.join(paths.logsDir, 'mcp.log'), `${new Date().toISOString()} ${line}\n`, 'utf-8')
+  } catch {
+    // logging is best-effort
+  }
+  send('mcp:activity', line)
+}
+
+function buildToolHost(): ToolHost {
+  return {
+    version: app.getVersion(),
+    config: () => config,
+    status: () => ({
+      tts: ttsWorker?.getStatus() || { state: 'stopped' },
+      asr: asrWorker?.getStatus() || { state: 'stopped' },
+      gpu: gpuInfo,
+      queueLength: queue.length + (queueBusy ? 1 : 0),
+      outputDir: config.outputDir,
+      voices: storage.listVoices().length
+    }),
+    models: () => scanModels(config.engineRoot),
+    voices: () => storage.listVoices(),
+    createVoice: async ({ sourcePath, name, transcript, lang }) => {
+      if (!fs.existsSync(sourcePath)) throw new Error(`文件不存在：${sourcePath}`)
+      const prepared = await prepareReference(config.engineRoot, sourcePath, paths.tempDir)
+      let text = transcript
+      let language = lang || 'auto'
+      if (!text) {
+        const [r] = await gpuQueue(async () => {
+          const w = await ensureAsrLoaded()
+          lastActivity.asr = Date.now()
+          return w.request<AsrFileResult[]>('transcribe', { files: [prepared.path], language: language }, 10 * 60 * 1000)
+        })
+        if (!r?.ok || !r.text.trim()) throw new Error(`识别参考文本失败：${r?.error || '空结果'}`)
+        text = r.text.trim()
+        if (language === 'auto' && r.language) language = r.language
+      }
+      const list = storage.importVoice({
+        sourcePath: prepared.path,
+        name,
+        transcript: text,
+        promptLang: language,
+        duration: prepared.duration,
+        originalName: path.basename(sourcePath)
+      })
+      send('voices:changed', null)
+      const v = list.find((x) => x.name === name.trim())
+      if (!v) throw new Error('音色保存失败')
+      return v
+    },
+    removeVoice: (id) => {
+      storage.removeVoice(id)
+      send('voices:changed', null)
+    },
+    history: () => storage.listHistory(),
+    synthesize: (options, outputPath) => gpuQueue(() => doSynthesize(options, outputPath, true)),
+    transcribe: (files, language) =>
+      gpuQueue(async () => {
+        const w = await ensureAsrLoaded()
+        lastActivity.asr = Date.now()
+        return w.request<AsrFileResult[]>('transcribe', { files, language }, 60 * 60 * 1000)
+      }),
+    cancelTts: () => ttsWorker?.send('cancel'),
+    audioFilesInFolder,
+    activity: mcpActivity
+  }
+}
+
+function mcpStatus(): McpStatus {
+  return {
+    running: Boolean(mcpServer?.running),
+    port: config.mcp.port,
+    url: mcpUrl(),
+    error: mcpServer?.error,
+    bridgePath: bridge?.script || '',
+    clients: listClients()
+  }
+}
+
+async function applyMcp(): Promise<void> {
+  bridge = ensureBridgeInfo()
+  if (!mcpServer) mcpServer = new McpServer(new McpTools(buildToolHost()), () => config.mcp.token, app.getVersion())
+  // Headless launch from the bridge always serves, even if the toggle is off.
+  if (config.mcp.enabled || headless) {
+    if (!mcpServer.running || mcpServer.port !== config.mcp.port) await mcpServer.start(config.mcp.port)
+  } else {
+    await mcpServer.stop()
+  }
+}
+
+function registerMcpIpc(): void {
+  ipcMain.handle('mcp:status', () => mcpStatus())
+  ipcMain.handle('mcp:restart', async () => {
+    await mcpServer?.stop()
+    await applyMcp()
+    return mcpStatus()
+  })
+  ipcMain.handle('mcp:regenerate-token', async () => {
+    config = { ...config, mcp: { ...config.mcp, token: randomToken() } }
+    saveConfig(config)
+    return mcpStatus()
+  })
+  ipcMain.handle('mcp:configure-client', (_event, id: string) => {
+    if (!bridge) bridge = ensureBridgeInfo()
+    configureClient(id, bridge, mcpUrl(), config.mcp.token)
+    return mcpStatus()
+  })
+  ipcMain.handle('mcp:snippet', (_event, id: string) => {
+    if (!bridge) bridge = ensureBridgeInfo()
+    return clientSnippet(id, bridge, mcpUrl(), config.mcp.token)
+  })
+  ipcMain.handle('mcp:agent-prompt', () => {
+    if (!bridge) bridge = ensureBridgeInfo()
+    return agentSetupPrompt(bridge, mcpUrl(), config.mcp.token)
+  })
+}
+
+function showWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    void createWindow()
+    return
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function createTray(): void {
+  if (tray) return
+  const iconPath = app.isPackaged ? path.join(process.resourcesPath, 'icon.ico') : path.join(paths.appRoot, 'resources', 'icon.ico')
+  tray = new Tray(fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty())
+  tray.setToolTip('GPT-SoVITS-Studio · MCP 服务运行中')
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: '打开主界面', click: showWindow },
+      { type: 'separator' },
+      { label: '退出', click: () => app.quit() }
+    ])
+  )
+  tray.on('click', showWindow)
+}
+
 async function boot(): Promise<void> {
   paths = getAppPaths()
   config = loadConfig()
   storage = new Storage(paths.dataRoot, paths.historyFile, paths.voicesFile, paths.voicesDir)
   if (config.outputDir && !fs.existsSync(config.outputDir)) fs.mkdirSync(config.outputDir, { recursive: true })
   registerIpc()
-  await createWindow()
+  await applyMcp()
+  if (headless) createTray()
+  else await createWindow()
   startGpuMonitor()
   startIdleMonitor()
 }
@@ -572,10 +810,10 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    if (!mainWindow) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
+  app.on('second-instance', (_event, argv) => {
+    // A headless launch from the MCP bridge must not pop the window.
+    if (argv.includes('--headless')) return
+    showWindow()
   })
 
   app.whenReady().then(boot).catch((error) => {
@@ -584,6 +822,12 @@ if (!gotLock) {
   })
 
   app.on('window-all-closed', () => {
+    // Keep serving agents in the tray when MCP is running.
+    if (mcpServer?.running) {
+      mainWindow = null
+      createTray()
+      return
+    }
     app.quit()
   })
 

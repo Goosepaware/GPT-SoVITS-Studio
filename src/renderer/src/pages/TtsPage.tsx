@@ -23,7 +23,8 @@ import {
   Wand2,
   X
 } from 'lucide-react'
-import type { Bootstrap, EngineStatus, HistoryEntry, ReferenceTransfer, SubtitleFormat, TtsResult, Voice, WorkerEvent } from '@shared/types'
+import { SUBTITLE_FORMATS, type Bootstrap, type EngineStatus, type HistoryEntry, type ReferenceTransfer, type SubtitleFormat, type TtsResult, type Voice, type WorkerEvent } from '@shared/types'
+import { FORMAT_LABEL } from '../components/SettingsExtraCards'
 import { AudioPlayer } from '../components/AudioPlayer'
 import { DropZone } from '../components/DropZone'
 import { HistoryRow } from '../components/HistoryRow'
@@ -167,6 +168,11 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
   const [voices, setVoices] = useState<Voice[]>([])
   const [voiceId, setVoiceId] = useState('')
   const [history, setHistory] = useState<HistoryEntry[]>([])
+  const [subtitleFormat, setSubtitleFormat] = useState<SubtitleFormat>(bootstrap.config.subtitle.defaultFormat)
+  const [batchFormats, setBatchFormats] = useState<SubtitleFormat[]>([bootstrap.config.subtitle.defaultFormat])
+  useEffect(() => setSubtitleFormat(bootstrap.config.subtitle.defaultFormat), [bootstrap.config.subtitle.defaultFormat])
+  // Agent (MCP) generations land in history while this page is open.
+  useEffect(() => window.api.onDataChanged((kind) => kind === 'history' && void window.api.history.list().then(setHistory)), [])
   const [historySelectMode, setHistorySelectMode] = useState(false)
   const [selectedHistory, setSelectedHistory] = useState<Set<string>>(new Set())
   const [confirmDelete, setConfirmDelete] = useState<{ ids: string[]; title: string; message: string } | null>(null)
@@ -502,7 +508,7 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
     }
     try {
       const paths = history.filter((entry) => selectedHistory.has(entry.id)).map((entry) => entry.filePath)
-      const result = await window.api.exportSubtitlesMany(paths, 'srt')
+      const result = await window.api.exportSubtitlesMany(paths, batchFormats)
       if (result) {
         const extra = result.skipped ? `，${result.skipped} 条没有时间轴已跳过` : ''
         notify(`已导出 ${result.written} 份字幕${extra}`, result.skipped ? 'warning' : 'success')
@@ -513,7 +519,7 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
     }
   }
 
-  async function exportSubtitle(filePath: string, format: SubtitleFormat = 'srt'): Promise<void> {
+  async function exportSubtitle(filePath: string, format: SubtitleFormat = subtitleFormat): Promise<void> {
     try {
       const file = await window.api.exportSubtitle(filePath, format)
       if (file) {
@@ -918,8 +924,22 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
               <div className="result-actions">
                 <button className="btn ghost small" onClick={() => void window.api.revealPath(result.filePath)}><FolderOpen size={14} /> 打开文件夹</button>
                 <button className="btn ghost small" onClick={() => void exportMp3()}><Download size={14} /> 导出 MP3</button>
-                <button className="btn ghost small" onClick={() => void exportSubtitle(result.filePath, 'srt')} disabled={!result.timingPath}><Download size={14} /> 导出字幕 SRT</button>
-                <button className="btn ghost small" onClick={() => void exportSubtitle(result.filePath, 'ass')} disabled={!result.timingPath}>ASS</button>
+                <span className="split-btn">
+                  <button className="btn ghost small" onClick={() => void exportSubtitle(result.filePath)} disabled={!result.timingPath}>
+                    <Captions size={14} /> 导出字幕
+                  </button>
+                  <select
+                    className="split-select"
+                    value={subtitleFormat}
+                    onChange={(event) => setSubtitleFormat(event.target.value as SubtitleFormat)}
+                    disabled={!result.timingPath}
+                    aria-label="字幕格式"
+                  >
+                    {SUBTITLE_FORMATS.map((f) => (
+                      <option key={f} value={f}>{FORMAT_LABEL[f]}</option>
+                    ))}
+                  </select>
+                </span>
                 <button className="btn ghost small danger-text" onClick={() => void discardResult()}><Trash2 size={14} /> 放弃</button>
                 <button className="btn ghost small" onClick={() => void discardAndRetry()} disabled={!canGenerate}><RotateCcw size={14} /> 放弃并重试</button>
               </div>
@@ -957,6 +977,23 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
                 <button className="text-btn" onClick={() => void exportSelectedHistory()} disabled={selectedHistory.size === 0}>
                   <Download size={13} /> 导出选中{selectedHistory.size ? `（${selectedHistory.size}）` : ''}
                 </button>
+                <span className="batch-formats">
+                  {SUBTITLE_FORMATS.map((f) => (
+                    <button
+                      key={f}
+                      type="button"
+                      className={cn('chip', batchFormats.includes(f) && 'active')}
+                      onClick={() =>
+                        setBatchFormats((prev) => {
+                          const next = prev.includes(f) ? prev.filter((x) => x !== f) : [...prev, f]
+                          return next.length ? next : [f]
+                        })
+                      }
+                    >
+                      {FORMAT_LABEL[f]}
+                    </button>
+                  ))}
+                </span>
                 <button className="text-btn" onClick={() => void exportSelectedSubtitles()} disabled={selectedHistory.size === 0}>
                   <Captions size={13} /> 导出字幕{selectedHistory.size ? `（${selectedHistory.size}）` : ''}
                 </button>

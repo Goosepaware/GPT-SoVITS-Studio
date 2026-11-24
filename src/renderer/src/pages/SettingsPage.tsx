@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Check, Contrast, FolderOpen, HardDrive, Loader2, Monitor, Moon, Palette, RotateCw, Save, ShieldCheck, Sun, Trash2 } from 'lucide-react'
 import type { AppConfig, Bootstrap } from '@shared/types'
 import { Select } from '../components/Select'
+import { AiConnectCard, SubtitleSettingsCard } from '../components/SettingsExtraCards'
 import { cn } from '../lib/format'
 import { applyTheme as applyDocumentTheme, watchSystemTheme } from '../lib/theme'
 
@@ -203,6 +204,10 @@ export function SettingsPage({ bootstrap, notify, onBootstrap }: Props): JSX.Ele
             默认主题为黑白，明暗跟随系统；彩色 / 黑白都支持深色、浅色和跟随系统。主题会立即预览，点击保存后持久化。
           </div>
         </section>
+
+        <SubtitleSettingsCard form={form} patch={patch} />
+
+        <AiConnectCard form={form} saved={bootstrap.config} patch={patch} notify={notify} />
 
         <section className="card settings-card about-card">
           <div className="panel-head">

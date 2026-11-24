@@ -81,9 +81,36 @@ node scripts/probe-worker.mjs asr     # 直接测试 ASR worker
 - 每句输出都会去掉首尾静音，句间按 `fragmentInterval` 补静音，时间轴因此是精确的。
 - 静音 / 异常时长的句子会换种子重试（默认 2 次），仍异常则记录在 `flags` 里。
 - 生成结果旁会写 `xxx.timing.json`（每句 text / start / end / voicedStart / paused / seed / retries / flags）。
-- `src/main/subtitles.ts` 把时间轴转成 SRT / ASS / LRC：长句按标点或字数拆分并吸附到换气停顿，
-  过短的相邻句合并，默认去掉句末标点，支持整体偏移。
-- 界面入口：生成完成卡片的「导出字幕 SRT / ASS」，最近生成每行的字幕按钮，批量管理里的「导出字幕」。
+- `src/main/subtitles.ts` 把时间轴转成 SRT / ASS / VTT / LRC / TXT / JSON：长句按标点或字数拆分并吸附到换气停顿，
+  过短的相邻句合并，默认去掉句末标点，支持整体偏移与 ASS 字体设置。
+- 配置在 `AppConfig.subtitle`，界面在「设置 → 字幕」；自动输出由主进程在合成后直接写文件。
+
+## MCP
+
+`src/main/mcp/` 三个文件：
+
+- `server.ts`：精简 MCP（Streamable HTTP，JSON-RPC 2.0，POST /mcp），只监听 127.0.0.1，Bearer token 鉴权，
+  拒绝浏览器跨域来源。工具错误作为 `isError` 结果返回，不中断服务。
+- `tools.ts`：13 个工具 + 3 个 prompts。耗时工具走 job：`wait` 秒内没完成就返回 jobId，
+  用 `job_status` 轮询、`job_cancel` 取消。
+- `clients.ts`：生成 `data/mcp/gsv-mcp.js`（stdio 桥接，用本程序的 exe + `ELECTRON_RUN_AS_NODE`），
+  以及 9 家客户端的配置写入 / 片段 / 提示词。
+
+要点：
+
+- 界面与 agent 的合成、识别都走 `gpuQueue`，界面任务优先；agent 任务会自动加载模型（底模）。
+- 关闭窗口后如果 MCP 在运行，进程留在托盘继续服务；`--headless` 启动则不建窗口。
+- 桥接发现服务没开时，会用 `--headless` 拉起程序（dev 下靠 `GSV_APP` 传 app 路径）。
+- 日志在 `data/logs/mcp.log`；设置页显示实时活动。
+
+本地测试脚本（不提交）：
+
+```powershell
+node --experimental-strip-types scripts/test-subtitles.ts   # 字幕六种格式
+node --experimental-strip-types scripts/test-clients.mjs    # 客户端配置写入（沙箱 HOME）
+node scripts/test-mcp.mjs                                   # HTTP 协议 + 真实合成
+node scripts/test-stdio.mjs                                 # stdio 桥接 + 自动拉起
+```
 
 ## 构建便携版
 

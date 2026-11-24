@@ -1,7 +1,20 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { buildCues, formatCues, subtitleFor, DEFAULT_SUBTITLE_OPTIONS } from '../src/main/subtitles.ts'
+import { buildCues, formatCues, subtitleFor, writeSubtitles } from '../src/main/subtitles.ts'
+
+const OPT = {
+  autoExport: false,
+  autoFormats: ['srt' as const],
+  defaultFormat: 'srt' as const,
+  maxChars: 18,
+  minChars: 4,
+  minDuration: 0.8,
+  stripTrailingPunct: true,
+  offsetMs: 0,
+  assFont: 'Microsoft YaHei',
+  assFontSize: 64
+}
 
 const dir = path.join(os.tmpdir(), 'gsv-sub-test')
 fs.mkdirSync(dir, { recursive: true })
@@ -29,22 +42,16 @@ const audio = path.join(dir, 'demo.wav')
 fs.writeFileSync(audio, '')
 fs.writeFileSync(path.join(dir, 'demo.timing.json'), JSON.stringify(timing))
 
-const cues = buildCues(timing, DEFAULT_SUBTITLE_OPTIONS)
+const cues = buildCues(timing as never, OPT as never)
 console.log('CUES:', cues.length)
 for (const c of cues) console.log(`  ${c.start.toFixed(2)}-${c.end.toFixed(2)}  ${c.text}`)
-
-const srt = subtitleFor(audio, 'srt')
-const ass = subtitleFor(audio, 'ass')
-const lrc = subtitleFor(audio, 'lrc')
-fs.writeFileSync(path.join(dir, 'demo.srt'), srt)
-fs.writeFileSync(path.join(dir, 'demo.ass'), ass)
-fs.writeFileSync(path.join(dir, 'demo.lrc'), lrc)
 
 function check(name: string, ok: boolean): void {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`)
   if (!ok) process.exitCode = 1
 }
 
+const srt = subtitleFor(audio, 'srt', OPT as never)
 check('BOM on srt', srt.charCodeAt(0) === 0xfeff)
 check('srt has arrow', srt.includes(' --> '))
 check('srt first cue starts 00:00:00,100', srt.includes('00:00:00,100 -->'))
@@ -52,20 +59,32 @@ check('no silent line', !srt.includes('没有声音的一句'))
 check('long sentence split', cues.filter((c) => c.start >= 3.5 && c.end <= 9).length >= 2)
 check('short neighbour merged', !cues.some((c) => c.text === '好'))
 check('trailing punct stripped', cues[0].text === '大家好，今天我们来聊聊语音合成')
-check('ass header', ass.includes('[V4+ Styles]') && ass.includes('Dialogue: 0,'))
+check('no line starts with punctuation', !cues.some((c) => /^[，,、；;：:。.！!？?…]/.test(c.text)))
+
+const asss = subtitleFor(audio, 'ass', OPT as never)
+check('ass header + font', asss.includes('[V4+ Styles]') && asss.includes('Microsoft YaHei') && asss.includes('Dialogue: 0,'))
+const vtt = subtitleFor(audio, 'vtt', OPT as never)
+check('vtt header', vtt.replace(/^\ufeff/, '').startsWith('WEBVTT') && /\d\d:\d\d:\d\d\.\d{3} --> /.test(vtt))
+const lrc = subtitleFor(audio, 'lrc', OPT as never)
 check('lrc bracket', /^\[\d\d:\d\d\.\d\d\]/m.test(lrc))
+const txt = subtitleFor(audio, 'txt', OPT as never)
+check('txt = one line per cue', txt.replace(/^\ufeff/, '').trim().split(/\r?\n/).length === cues.length)
+const json = subtitleFor(audio, 'json', OPT as never)
+check('json keeps segments', JSON.parse(json.replace(/^\ufeff/, '')).segments.length === 4)
 
-const off = buildCues(timing, { ...DEFAULT_SUBTITLE_OPTIONS, offsetMs: 500 })
+const off = buildCues(timing as never, { ...OPT, offsetMs: 500 } as never)
 check('offset applied', Math.abs(off[0].start - cues[0].start - 0.5) < 1e-6)
-
-const noStrip = buildCues(timing, { ...DEFAULT_SUBTITLE_OPTIONS, stripTrailingPunct: false })
+const noStrip = buildCues(timing as never, { ...OPT, stripTrailingPunct: false } as never)
 check('strip disabled', noStrip[0].text.endsWith('。'))
 
-// Monotonic, non-overlapping cues
-let ok = true
-for (let i = 1; i < cues.length; i++) if (cues[i].start < cues[i - 1].start) ok = false
-check('cues ordered', ok)
-check('all cues within duration+offset', cues.every((c) => c.start >= 0 && c.end > c.start))
+let ordered = true
+for (let i = 1; i < cues.length; i++) if (cues[i].start < cues[i - 1].start) ordered = false
+check('cues ordered', ordered)
+check('all cues valid', cues.every((c) => c.start >= 0 && c.end > c.start))
+
+const written = writeSubtitles(audio, ['srt', 'ass', 'vtt', 'lrc', 'txt', 'json'], OPT as never, dir)
+check('writes all 6 formats', written.length === 6 && written.every((f) => fs.existsSync(f)))
+check('json sidecar untouched', fs.readFileSync(path.join(dir, 'demo.timing.json'), 'utf-8').includes('"segments"'))
 
 console.log('\n--- SRT ---')
 console.log(srt.replace(/^\ufeff/, ''))

@@ -1,7 +1,23 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import type { SubtitleConfig, SubtitleFormat } from '@shared/types'
 
-export type SubtitleFormat = 'srt' | 'ass' | 'lrc'
+export type { SubtitleFormat }
+
+export function defaultSubtitleConfig(): SubtitleConfig {
+  return {
+    autoExport: false,
+    autoFormats: ['srt'],
+    defaultFormat: 'srt',
+    maxChars: 18,
+    minChars: 4,
+    minDuration: 0.8,
+    stripTrailingPunct: true,
+    offsetMs: 0,
+    assFont: 'Microsoft YaHei',
+    assFontSize: 64
+  }
+}
 
 interface TimingSegment {
   index: number
@@ -14,9 +30,11 @@ interface TimingSegment {
   flags?: string[]
 }
 
-interface TimingFile {
+export interface TimingFile {
   version: number
   duration: number
+  sampleRate?: number
+  seed?: number
   segments: TimingSegment[]
 }
 
@@ -26,24 +44,17 @@ export interface Cue {
   text: string
 }
 
-export interface SubtitleOptions {
-  maxChars: number // per cue, CJK-weighted
-  minChars: number // merge shorter neighbours
-  minDuration: number // seconds
-  stripTrailingPunct: boolean
-  offsetMs: number
-}
-
-export const DEFAULT_SUBTITLE_OPTIONS: SubtitleOptions = {
-  maxChars: 18,
-  minChars: 4,
-  minDuration: 0.8,
-  stripTrailingPunct: true,
-  offsetMs: 0
-}
-
 const BREAK_PUNCT = /[，,、；;：:。！？!?…—\s]/
 const TRAILING_PUNCT = /[，,、；;：:。.！!？?…\s]+$/u
+
+export const SUBTITLE_EXT: Record<SubtitleFormat, string> = {
+  srt: 'srt',
+  ass: 'ass',
+  vtt: 'vtt',
+  lrc: 'lrc',
+  txt: 'txt',
+  json: 'timing.json'
+}
 
 export function timingPathFor(audioPath: string): string {
   return audioPath.replace(/\.[^.\\/]+$/, '') + '.timing.json'
@@ -53,10 +64,16 @@ export function hasTiming(audioPath: string): boolean {
   return fs.existsSync(timingPathFor(audioPath))
 }
 
-function readTiming(audioPath: string): TimingFile {
+export function readTiming(audioPath: string): TimingFile {
   const p = timingPathFor(audioPath)
   if (!fs.existsSync(p)) throw new Error('这条记录没有时间轴（旧版本生成），请重新生成后再导出字幕')
   return JSON.parse(fs.readFileSync(p, 'utf-8')) as TimingFile
+}
+
+/** All sidecar subtitle files that may sit next to an audio file (for cleanup). */
+export function sidecarPaths(audioPath: string): string[] {
+  const base = audioPath.replace(/\.[^.\\/]+$/, '')
+  return [...new Set(Object.values(SUBTITLE_EXT))].map((ext) => `${base}.${ext}`)
 }
 
 function weight(text: string): number {
@@ -65,7 +82,6 @@ function weight(text: string): number {
   return w
 }
 
-/** Split long text into chunks <= maxChars, preferring punctuation boundaries. */
 function chunkText(text: string, maxChars: number): string[] {
   if (weight(text) <= maxChars) return [text]
   const parts: string[] = []
@@ -85,7 +101,7 @@ function chunkText(text: string, maxChars: number): string[] {
     }
     const cut = soft > 0 ? soft : Math.max(1, hard)
     parts.push(chars.slice(0, cut).join('').trim())
-    // A cut right after punctuation leaves it orphaned at the head of the next line.
+    // A hard cut can leave punctuation orphaned at the head of the next line.
     rest = chars
       .slice(cut)
       .join('')
@@ -96,7 +112,6 @@ function chunkText(text: string, maxChars: number): string[] {
   return parts.filter(Boolean)
 }
 
-/** Move a proportional cut point to the nearest detected breath pause, if close. */
 function snapToPause(t: number, pauses: number[], lo: number, hi: number): number {
   const window = Math.min(0.6, (hi - lo) * 0.25)
   let best = t
@@ -112,7 +127,7 @@ function snapToPause(t: number, pauses: number[], lo: number, hi: number): numbe
   return best
 }
 
-export function buildCues(timing: TimingFile, opts: SubtitleOptions): Cue[] {
+export function buildCues(timing: TimingFile, opts: SubtitleConfig): Cue[] {
   const raw: Cue[] = []
   for (const seg of timing.segments) {
     if (seg.flags?.includes('silent') || !seg.text.trim()) continue
@@ -135,17 +150,11 @@ export function buildCues(timing: TimingFile, opts: SubtitleOptions): Cue[] {
     })
   }
 
-  // Merge too-short neighbours that sit close together.
   const short = (c: Cue): boolean => weight(c.text) < opts.minChars || c.end - c.start < opts.minDuration
   const merged: Cue[] = []
   for (const cue of raw) {
     const last = merged[merged.length - 1]
-    if (
-      last &&
-      (short(cue) || short(last)) &&
-      cue.start - last.end < 0.5 &&
-      weight(last.text) + weight(cue.text) <= opts.maxChars
-    ) {
+    if (last && (short(cue) || short(last)) && cue.start - last.end < 0.5 && weight(last.text) + weight(cue.text) <= opts.maxChars) {
       last.text = `${last.text}${/[A-Za-z0-9]$/.test(last.text) ? ' ' : ''}${cue.text}`
       last.end = cue.end
     } else {
@@ -165,9 +174,9 @@ function pad(n: number, w = 2): string {
   return String(Math.floor(n)).padStart(w, '0')
 }
 
-function srtTime(t: number): string {
+function clock(t: number, msSep: string): string {
   const ms = Math.round(t * 1000)
-  return `${pad(ms / 3600000)}:${pad((ms / 60000) % 60)}:${pad((ms / 1000) % 60)},${pad(ms % 1000, 3)}`
+  return `${pad(ms / 3600000)}:${pad((ms / 60000) % 60)}:${pad((ms / 1000) % 60)}${msSep}${pad(ms % 1000, 3)}`
 }
 
 function assTime(t: number): string {
@@ -180,46 +189,69 @@ function lrcTime(t: number): string {
   return `[${pad(cs / 6000)}:${pad((cs / 100) % 60)}.${pad(cs % 100)}]`
 }
 
-export function formatCues(cues: Cue[], format: SubtitleFormat): string {
-  if (format === 'srt') {
-    return cues.map((c, i) => `${i + 1}\r\n${srtTime(c.start)} --> ${srtTime(c.end)}\r\n${c.text}\r\n`).join('\r\n')
+export function formatCues(cues: Cue[], format: Exclude<SubtitleFormat, 'json'>, opts: SubtitleConfig): string {
+  const NL = '\r\n'
+  switch (format) {
+    case 'srt':
+      return cues.map((c, i) => `${i + 1}${NL}${clock(c.start, ',')} --> ${clock(c.end, ',')}${NL}${c.text}${NL}`).join(NL)
+    case 'vtt':
+      return 'WEBVTT' + NL + NL + cues.map((c, i) => `${i + 1}${NL}${clock(c.start, '.')} --> ${clock(c.end, '.')}${NL}${c.text}${NL}`).join(NL)
+    case 'lrc':
+      return cues.map((c) => `${lrcTime(c.start)}${c.text}`).join(NL) + NL
+    case 'txt':
+      return cues.map((c) => c.text).join(NL) + NL
+    case 'ass': {
+      const header = [
+        '[Script Info]',
+        'ScriptType: v4.00+',
+        'PlayResX: 1920',
+        'PlayResY: 1080',
+        'WrapStyle: 0',
+        '',
+        '[V4+ Styles]',
+        'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+        `Style: Default,${opts.assFont.replace(/,/g, ' ')},${opts.assFontSize},&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,3,0,2,60,60,60,1`,
+        '',
+        '[Events]',
+        'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text'
+      ]
+      const lines = cues.map((c) => `Dialogue: 0,${assTime(c.start)},${assTime(c.end)},Default,,0,0,0,,${c.text.replace(/\r?\n/g, '\\N')}`)
+      return [...header, ...lines].join(NL) + NL
+    }
   }
-  if (format === 'lrc') {
-    return cues.map((c) => `${lrcTime(c.start)}${c.text}`).join('\r\n') + '\r\n'
-  }
-  const header = [
-    '[Script Info]',
-    'ScriptType: v4.00+',
-    'PlayResX: 1920',
-    'PlayResY: 1080',
-    '',
-    '[V4+ Styles]',
-    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    'Style: Default,Microsoft YaHei,64,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,3,0,2,60,60,60,1',
-    '',
-    '[Events]',
-    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text'
-  ]
-  const lines = cues.map(
-    (c) => `Dialogue: 0,${assTime(c.start)},${assTime(c.end)},Default,,0,0,0,,${c.text.replace(/\r?\n/g, '\\N')}`
-  )
-  return [...header, ...lines].join('\r\n') + '\r\n'
 }
 
-/** Build subtitle text for one generated audio file. */
-export function subtitleFor(audioPath: string, format: SubtitleFormat, opts: Partial<SubtitleOptions> = {}): string {
-  const cues = buildCues(readTiming(audioPath), { ...DEFAULT_SUBTITLE_OPTIONS, ...opts })
-  // BOM keeps Chinese readable in editors that sniff encoding (Premiere, older Aegisub).
-  return '\ufeff' + formatCues(cues, format)
+export function subtitleFileName(audioPath: string, format: SubtitleFormat): string {
+  return `${path.basename(audioPath).replace(/\.[^.]+$/, '')}.${SUBTITLE_EXT[format]}`
 }
 
-export function writeSubtitle(
-  audioPath: string,
-  targetPath: string,
-  format: SubtitleFormat,
-  opts?: Partial<SubtitleOptions>
-): string {
+/** Subtitle text for one audio file (for previews/tests). */
+export function subtitleFor(audioPath: string, format: SubtitleFormat, opts?: Partial<SubtitleConfig>): string {
+  const timing = readTiming(audioPath)
+  const cfg = { ...defaultSubtitleConfig(), ...(opts || {}) }
+  if (format === 'json') return JSON.stringify(timing, null, 1)
+  return '\ufeff' + formatCues(buildCues(timing, cfg), format, cfg)
+}
+
+/** Write one subtitle file. Returns the written path. */
+export function writeSubtitle(audioPath: string, targetPath: string, format: SubtitleFormat, opts?: Partial<SubtitleConfig>): string {
+  const timing = readTiming(audioPath)
   fs.mkdirSync(path.dirname(targetPath), { recursive: true })
-  fs.writeFileSync(targetPath, subtitleFor(audioPath, format, opts), 'utf-8')
+  if (format === 'json') {
+    if (path.resolve(targetPath) !== path.resolve(timingPathFor(audioPath))) {
+      fs.writeFileSync(targetPath, JSON.stringify(timing, null, 1), 'utf-8')
+    }
+    return targetPath
+  }
+  const cfg = { ...defaultSubtitleConfig(), ...(opts || {}) }
+  const body = formatCues(buildCues(timing, cfg), format, cfg)
+  // BOM keeps Chinese readable in editors that sniff encoding (Premiere, older Aegisub).
+  fs.writeFileSync(targetPath, '\ufeff' + body, 'utf-8')
   return targetPath
+}
+
+/** Write several formats into a directory (default: next to the audio). */
+export function writeSubtitles(audioPath: string, formats: SubtitleFormat[], opts?: Partial<SubtitleConfig>, dir?: string): string[] {
+  const outDir = dir || path.dirname(audioPath)
+  return [...new Set(formats)].map((f) => writeSubtitle(audioPath, path.join(outDir, subtitleFileName(audioPath, f)), f, opts))
 }

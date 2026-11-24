@@ -11,6 +11,8 @@ export interface AppConfig {
   idleUnloadMinutes: number
   device: string
   half: boolean
+  subtitle: SubtitleConfig
+  mcp: McpConfig
 }
 
 export type AsrModelId = 'sensevoice'
@@ -138,7 +140,46 @@ export interface TtsResult {
   warnings?: string[]
 }
 
-export type SubtitleFormat = 'srt' | 'ass' | 'lrc'
+export type SubtitleFormat = 'srt' | 'ass' | 'vtt' | 'lrc' | 'txt' | 'json'
+
+export const SUBTITLE_FORMATS: SubtitleFormat[] = ['srt', 'ass', 'vtt', 'lrc', 'txt', 'json']
+
+export interface SubtitleConfig {
+  autoExport: boolean
+  autoFormats: SubtitleFormat[]
+  defaultFormat: SubtitleFormat
+  maxChars: number
+  minChars: number
+  minDuration: number
+  stripTrailingPunct: boolean
+  offsetMs: number
+  assFont: string
+  assFontSize: number
+}
+
+export interface McpConfig {
+  enabled: boolean
+  port: number
+  token: string
+  pathAllowlist: string[]
+}
+
+export interface McpClientInfo {
+  id: string
+  label: string
+  detected: boolean
+  configured: boolean
+  configPath: string
+}
+
+export interface McpStatus {
+  running: boolean
+  port: number
+  url: string
+  error?: string
+  bridgePath: string
+  clients: McpClientInfo[]
+}
 
 export interface HistoryEntry {
   id: string
@@ -216,8 +257,21 @@ export interface AppApi {
   openPath: (path: string) => Promise<void>
   revealPath: (path: string) => Promise<void>
   exportMp3: (sourcePath: string) => Promise<string | null>
-  exportSubtitle: (sourcePath: string, format: SubtitleFormat) => Promise<string | null>
-  exportSubtitlesMany: (sourcePaths: string[], format: SubtitleFormat) => Promise<{ dir: string; written: number; skipped: number } | null>
+  exportSubtitle: (sourcePath: string, format?: SubtitleFormat) => Promise<string | null>
+  exportSubtitlesMany: (
+    sourcePaths: string[],
+    formats: SubtitleFormat[]
+  ) => Promise<{ dir: string; written: number; skipped: number } | null>
+  mcp: {
+    status: () => Promise<McpStatus>
+    restart: () => Promise<McpStatus>
+    regenerateToken: () => Promise<McpStatus>
+    configureClient: (id: string) => Promise<McpStatus>
+    snippet: (id: string) => Promise<string>
+    agentPrompt: () => Promise<string>
+    onActivity: (cb: (line: string) => void) => () => void
+  }
+  onDataChanged: (cb: (kind: 'history' | 'voices') => void) => () => void
   saveAsrResults: (payload: {
     items: AsrFileResult[]
     format: 'list' | 'txt'
