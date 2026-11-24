@@ -2,6 +2,7 @@
   [string]$Source = "",
   [Parameter(Mandatory = $true)][string]$Destination,
   [switch]$SkipRuntime,
+  [switch]$SlimModels,
   [switch]$Force
 )
 
@@ -56,17 +57,28 @@ if (-not $SkipRuntime) {
 }
 
 Write-Host "[2/6] GPT_SoVITS code..."
-Copy-Tree (Join-Path $Source "GPT_SoVITS") (Join-Path $Destination "GPT_SoVITS") @("pretrained_models", "__pycache__")
+$codeExclude = @("pretrained_models", "__pycache__")
+if ($SlimModels) { $codeExclude += "G2PWModel" }
+Copy-Tree (Join-Path $Source "GPT_SoVITS") (Join-Path $Destination "GPT_SoVITS") $codeExclude
 
 Write-Host "[3/6] selected pretrained models..."
 $pretrained = Join-Path $Destination "GPT_SoVITS\pretrained_models"
 New-Item -ItemType Directory -Force -Path $pretrained | Out-Null
-foreach ($dir in @("chinese-roberta-wwm-ext-large", "chinese-hubert-base", "fast_langdetect")) {
-  Copy-Tree (Join-Path $Source "GPT_SoVITS\pretrained_models\$dir") (Join-Path $pretrained $dir)
+if ($SlimModels) {
+  # Slim package: big weights are downloaded by the app (models page / MCP download_models).
+  Write-Host "  slim: skipping s1v3.ckpt, s2Gv5turbo.pth, vocoder.pth, HuBERT, RoBERTa, langdetect, G2PW"
+  foreach ($dir in @("gsv-v5-pretrained", "chinese-roberta-wwm-ext-large", "chinese-hubert-base", "fast_langdetect")) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $pretrained $dir) | Out-Null
+  }
+  New-Item -ItemType Directory -Force -Path (Join-Path $Destination "GPT_SoVITS\text\G2PWModel") | Out-Null
+} else {
+  foreach ($dir in @("chinese-roberta-wwm-ext-large", "chinese-hubert-base", "fast_langdetect")) {
+    Copy-Tree (Join-Path $Source "GPT_SoVITS\pretrained_models\$dir") (Join-Path $pretrained $dir)
+  }
+  Copy-FileIfExists (Join-Path $Source "GPT_SoVITS\pretrained_models\s1v3.ckpt") (Join-Path $pretrained "s1v3.ckpt")
+  Copy-FileIfExists (Join-Path $Source "GPT_SoVITS\pretrained_models\gsv-v5-pretrained\s2Gv5turbo.pth") (Join-Path $pretrained "gsv-v5-pretrained\s2Gv5turbo.pth")
+  Copy-FileIfExists (Join-Path $Source "GPT_SoVITS\pretrained_models\gsv-v5-pretrained\vocoder.pth") (Join-Path $pretrained "gsv-v5-pretrained\vocoder.pth")
 }
-Copy-FileIfExists (Join-Path $Source "GPT_SoVITS\pretrained_models\s1v3.ckpt") (Join-Path $pretrained "s1v3.ckpt")
-Copy-FileIfExists (Join-Path $Source "GPT_SoVITS\pretrained_models\gsv-v5-pretrained\s2Gv5turbo.pth") (Join-Path $pretrained "gsv-v5-pretrained\s2Gv5turbo.pth")
-Copy-FileIfExists (Join-Path $Source "GPT_SoVITS\pretrained_models\gsv-v5-pretrained\vocoder.pth") (Join-Path $pretrained "gsv-v5-pretrained\vocoder.pth")
 
 Write-Host "[4/6] tools (without UVR5 and old ASR models)..."
 Copy-Tree (Join-Path $Source "tools") (Join-Path $Destination "tools") @("uvr5", "denoise-model", (Join-Path $Source "tools\asr\models"), "__pycache__")
@@ -76,9 +88,21 @@ $cache = Join-Path $env:USERPROFILE ".cache\modelscope"
 $sense = Join-Path $cache "hub\models\iic\SenseVoiceSmall"
 $vad = Join-Path $cache "models\iic--speech_fsmn_vad_zh-cn-16k-common-pytorch\snapshots\master"
 $spk = Join-Path $cache "hub\models\iic\speech_campplus_sv_zh-cn_16k-common"
+# Rebuilding from another portable folder: its engine already holds the ASR models.
+if (-not (Test-Path $sense) -and (Test-Path (Join-Path $Source "models\asr\SenseVoiceSmall"))) { $sense = Join-Path $Source "models\asr\SenseVoiceSmall" }
+if (-not (Test-Path $vad) -and (Test-Path (Join-Path $Source "models\asr\fsmn-vad"))) { $vad = Join-Path $Source "models\asr\fsmn-vad" }
+if (-not (Test-Path $spk) -and (Test-Path (Join-Path $Source "models\asr\campplus"))) { $spk = Join-Path $Source "models\asr\campplus" }
 $asrRoot = Join-Path $Destination "models\asr"
 New-Item -ItemType Directory -Force -Path $asrRoot | Out-Null
-if (Test-Path $sense) { Copy-Tree $sense (Join-Path $asrRoot "SenseVoiceSmall") } else { throw "SenseVoiceSmall not found: $sense" }
+if ($SlimModels) {
+  # SenseVoice is downloadable; VAD and CAM++ are tiny and ship with the package.
+  New-Item -ItemType Directory -Force -Path (Join-Path $asrRoot "SenseVoiceSmall") | Out-Null
+  Write-Host "  slim: skipping SenseVoiceSmall (downloaded by the app)"
+} elseif (Test-Path $sense) {
+  Copy-Tree $sense (Join-Path $asrRoot "SenseVoiceSmall")
+} else {
+  throw "SenseVoiceSmall not found: $sense"
+}
 if (Test-Path $vad) { Copy-Tree $vad (Join-Path $asrRoot "fsmn-vad") } else { throw "FSMN-VAD not found: $vad" }
 if (Test-Path $spk) { Copy-Tree $spk (Join-Path $asrRoot "campplus") } else { Write-Warning "CAM++ not found: $spk (speaker diarization will be unavailable)" }
 

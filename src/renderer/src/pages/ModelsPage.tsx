@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import { Activity, AlertTriangle, CheckCircle2, Cpu, FolderOpen, HardDrive, Loader2, RefreshCw, Square, Terminal, Zap } from 'lucide-react'
 import type { Bootstrap, EngineStatus, GpuInfo } from '@shared/types'
+import { ModelDownloadsCard } from '../components/ModelDownloads'
 import { cn, formatBytes, formatClock } from '../lib/format'
 
 export interface LogLine {
@@ -35,8 +36,7 @@ function modelName(path: string | undefined): string {
   return path.split(/[\\/]/).pop() || path
 }
 
-export function ModelsPage({ bootstrap, engines, gpu, logs, notify, onBootstrap }: Props): JSX.Element {
-  const [logFilter, setLogFilter] = useState<'all' | 'tts' | 'asr'>('all')
+export function ModelsPage({ bootstrap, engines, gpu, logs, notify, onBootstrap }: Props): JSX.Element {  const [logFilter, setLogFilter] = useState<'all' | 'tts' | 'asr'>('all')
   const [refreshing, setRefreshing] = useState(false)
   const filteredLogs = useMemo(() => logs.filter((log) => logFilter === 'all' || log.engine === logFilter).slice(-160), [logs, logFilter])
   const vramRatio = gpu && gpu.memoryTotalMB ? Math.min(1, gpu.memoryUsedMB / gpu.memoryTotalMB) : 0
@@ -128,6 +128,8 @@ export function ModelsPage({ bootstrap, engines, gpu, logs, notify, onBootstrap 
           )
         })}
       </div>
+
+      <ModelDownloadsCard bootstrap={bootstrap} notify={notify} onBootstrap={onBootstrap} />
 
       <div className="models-mid-grid">
         <section className="card gpu-card">

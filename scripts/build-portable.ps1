@@ -1,6 +1,7 @@
 ﻿param(
   [switch]$Force,
   [switch]$SkipEngine,
+  [switch]$SlimModels,
   [string]$Source = ""
 )
 
@@ -63,7 +64,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $release "data") | Out-Null
 
 if (-not $SkipEngine) {
   Write-Host "[4/5] Preparing slim engine (this copies several GB)..."
-  & (Join-Path $PSScriptRoot "prepare-engine.ps1") -Source $Source -Destination (Join-Path $release "engine") -Force
+  & (Join-Path $PSScriptRoot "prepare-engine.ps1") -Source $Source -Destination (Join-Path $release "engine") -Force -SlimModels:$SlimModels
   if ($LASTEXITCODE -ne 0) { throw "prepare-engine failed" }
 } else {
   Write-Host "[4/5] Engine copy skipped (-SkipEngine)"

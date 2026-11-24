@@ -8,6 +8,7 @@ import { ToastStack } from './components/ToastStack'
 import { TopBar } from './components/TopBar'
 import { AsrPage } from './pages/AsrPage'
 import { AudioToolsPage } from './pages/AudioToolsPage'
+import { MissingModels } from './components/MissingModels'
 import { ModelsPage, type LogLine } from './pages/ModelsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { TtsPage } from './pages/TtsPage'
@@ -29,6 +30,7 @@ export default function App(): JSX.Element {
   const [logs, setLogs] = useState<LogLine[]>([])
   const [notices, setNotices] = useState<Notice[]>([])
   const [referenceTransfer, setReferenceTransfer] = useState<ReferenceTransfer | null>(null)
+  const [packsGateDismissed, setPacksGateDismissed] = useState(false)
   const logSeq = useRef(0)
 
   function notify(message: string, tone: 'info' | 'success' | 'warning' | 'error' = 'info'): void {
@@ -147,6 +149,22 @@ export default function App(): JSX.Element {
       <div className="app-shell">
         <TitleBar />
         <SetupScreen bootstrap={bootstrap} onChanged={setBootstrap} />
+      </div>
+    )
+  }
+
+  const packsMissing = (bootstrap.validation.modelPacks || []).filter((p) => !p.installed)
+  if (!packsGateDismissed && packsMissing.length > 0) {
+    return (
+      <div className="app-shell">
+        <TitleBar />
+        <MissingModels
+          bootstrap={bootstrap}
+          notify={notify}
+          onSkip={() => setPacksGateDismissed(true)}
+          onRefresh={() => void window.api.refreshBootstrap().then(setBootstrap)}
+        />
+        <ToastStack notices={notices} onDismiss={dismissNotice} />
       </div>
     )
   }

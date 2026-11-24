@@ -6,6 +6,7 @@ import {
   type AsrFileResult,
   type HistoryEntry,
   type ModelCatalog,
+  type ModelPackInfo,
   type SepModelInfo,
   type SepResult,
   type SubtitleFormat,
@@ -27,6 +28,9 @@ export interface ToolHost {
   createVoice: (p: { sourcePath: string; name: string; transcript?: string; lang?: string }) => Promise<Voice>
   removeVoice: (id: string) => void
   history: () => HistoryEntry[]
+  /** Downloadable model packs (TTS core, G2PW, SenseVoice, ...). */
+  packs: () => ModelPackInfo[]
+  downloadPack: (id: string, onProgress: (file: string, received: number, total: number) => void) => Promise<string[]>
   /** Runs on the shared GPU queue; auto-loads models. */
   synthesize: (options: Json, outputPath?: string) => Promise<TtsResult>
   transcribe: (files: string[], language: string) => Promise<AsrFileResult[]>
@@ -370,7 +374,8 @@ export class McpTools {
         inputSchema: { type: 'object', properties: {} },
         run: async () => ({
           ...h.models().tts,
-          separation: (h.dub?.sepModels() || []).map((m) => ({ id: m.id, label: m.label, installed: m.installed, note: m.note }))
+          separation: (h.dub?.sepModels() || []).map((m) => ({ id: m.id, label: m.label, installed: m.installed, note: m.note })),
+          packs: (h.packs?.() || []).map((p) => ({ id: p.id, label: p.label, installed: p.installed, missingBytes: p.missingBytes, totalBytes: p.totalBytes, bundled: p.bundled }))
         })
       },
       {
@@ -812,6 +817,40 @@ export class McpTools {
           }
           const r = await burnSubtitles(h.config().engineRoot, this.checkPath(String(a.videoPath || '')), cues, outputPath, a.mode === 'soft' ? 'soft' : 'hard', style)
           return { ...r, cues: cues.length, paired: cues.filter((c) => c.secondary).length }
+        }
+      },
+      {
+        name: 'download_models',
+        description:
+          'Download missing model packs (TTS core weights, G2PW, langdetect, SenseVoice). Already-present files are skipped; downloads resume and verify sha256. Usage: list_models first to see which packs are missing, then call this once with pack ids (or "all"). Large: several GB — tell the user before starting.',
+        long: true,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            packs: { type: 'array', items: { type: 'string' }, description: 'Pack ids: tts-core, g2pw, langdetect, asr-sensevoice, asr-vad, asr-spk. Omit or ["all"] for every missing pack.' }
+          }
+        },
+        run: async (a, job) => {
+          if (!h.downloadPack || !h.packs) throw new Error('Downloads unavailable')
+          const wanted = Array.isArray(a.packs) && a.packs.length && !(a.packs as string[]).includes('all') ? (a.packs as string[]).map(String) : null
+          const missing = h.packs().filter((p) => !p.installed && (!wanted || wanted.includes(p.id)))
+          if (!missing.length) return { downloaded: [], note: 'everything is already installed' }
+          const out: Json[] = []
+          for (const pack of missing) {
+            if (job?.cancelRequested) break
+            if (job) job.progress = `${pack.id}`
+            try {
+              const files = await h.downloadPack(pack.id, (file, received, total) => {
+                if (!job) return
+                job.percent = total ? received / total : undefined
+                job.progress = `${pack.id} · ${file}`
+              })
+              out.push({ id: pack.id, files: files.length })
+            } catch (error) {
+              out.push({ id: pack.id, error: error instanceof Error ? error.message : String(error) })
+            }
+          }
+          return { downloaded: out, packs: h.packs() }
         }
       },
       {

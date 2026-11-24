@@ -79,9 +79,19 @@ const api: AppApi = {
       ipcRenderer.invoke('dub:voice-from-span', src, start, end, name, transcript, lang),
     saveScript: (src: string, lines: unknown[]) => ipcRenderer.invoke('dub:save-script', src, lines)
   },
+  packs: {
+    list: () => ipcRenderer.invoke('packs:list'),
+    download: (id: string) => ipcRenderer.invoke('packs:download', id),
+    cancel: (id: string) => ipcRenderer.invoke('packs:cancel', id),
+    remove: (id: string) => ipcRenderer.invoke('packs:remove', id),
+    onProgress: (cb) => {
+      const listener = (_event: Electron.IpcRendererEvent, p: Parameters<typeof cb>[0]): void => cb(p)
+      ipcRenderer.on('packs:progress', listener)
+      return () => ipcRenderer.removeListener('packs:progress', listener)
+    }
+  },
   sep: {
-    models: () => ipcRenderer.invoke('sep:models'),
-    download: (id: string) => ipcRenderer.invoke('sep:download', id),
+    models: () => ipcRenderer.invoke('sep:models'),    download: (id: string) => ipcRenderer.invoke('sep:download', id),
     cancelDownload: (id: string) => ipcRenderer.invoke('sep:cancel-download', id),
     remove: (id: string) => ipcRenderer.invoke('sep:remove', id),
     separate: (src: string, model?: string) => ipcRenderer.invoke('sep:separate', src, model),

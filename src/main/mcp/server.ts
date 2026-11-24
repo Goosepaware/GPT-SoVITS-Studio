@@ -24,6 +24,7 @@ const INSTRUCTIONS = [
   'VRAM: models stay loaded between calls for speed. Do not unload during a multi-step task; call unload_models once the whole task is done (or when the user asks).',
   'Fix single bad sentences: list_segments -> preview_segments -> commit_segment (revert_edits to undo).',
   'Synthesis params: agent default sampleSteps 8 (adjust 4-32 as needed); fragmentInterval = pause between sentences inside one line.',
+  'Missing models: list_models shows packs; download_models {packs} fetches them (GBs, confirm with the user first).',
   'Dubbing: separate_audio -> diarize (or import_subtitle) -> build_script (you segment sentences, server times them) -> translate -> synthesize_script with start/end -> mix_dub bgm:replace -> burn_subtitles (bilingual). See prompt localize_video.',
   'Paths must be absolute local paths. See prompts for full workflows.'
 ].join('\n')

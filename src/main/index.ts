@@ -45,6 +45,7 @@ import {
 } from './segmentEdit'
 import { cutClip, extractAudio, fitLine, mixDub, type MixItem } from './dub'
 import { cancelSepDownload, cancelSeparation, downloadSepModel, listSepModels, removeSepModel, separate as runSeparate } from './separation'
+import { cancelPack, downloadPack, packStatus, removePack, type PackId } from './packs'
 import type { SepResult } from '@shared/types'
 import type { DiarizeResult } from '@shared/types'
 
@@ -87,13 +88,16 @@ function notice(engine: EngineName, message: string, tone: 'info' | 'success' | 
 
 function makeBootstrap(): Bootstrap {
   const missing = engineMissing(config.engineRoot)
+  const codeOk = Boolean(config.engineRoot) && isEngineRoot(config.engineRoot)
   return {
     config,
     validation: {
       root: config.engineRoot,
-      valid: Boolean(config.engineRoot) && missing.length === 0 && isEngineRoot(config.engineRoot),
-      missing,
-      runtime: config.engineRoot ? path.join(config.engineRoot, 'runtime', 'python.exe') : ''
+      // Code + runtime decide whether the app can start at all; model files are downloadable.
+      valid: codeOk,
+      missing: codeOk ? [] : missing,
+      runtime: config.engineRoot ? path.join(config.engineRoot, 'runtime', 'python.exe') : '',
+      modelPacks: config.engineRoot ? packStatus(config.engineRoot) : []
     },
     models: config.engineRoot ? scanModels(config.engineRoot) : { tts: { gpt: [], sovits: [] }, asr: { sensevoice: null, vad: null } },
     version: app.getVersion(),
@@ -500,6 +504,24 @@ function registerIpc(): void {
     if (r.canceled || !r.filePath) return null
     fs.writeFileSync(r.filePath, JSON.stringify({ source: src, lines }, null, 1), 'utf-8')
     return r.filePath
+  })
+  ipcMain.handle('packs:list', () => packStatus(config.engineRoot))
+  ipcMain.handle('packs:download', async (_e, id: string) => {
+    const source = config.hfSource === 'official' ? 'hf' : 'mirror'
+    try {
+      await downloadPack(config.engineRoot, id as PackId, source, (p) => send('packs:progress', { id, ...p }))
+      send('packs:progress', { id, file: '', received: 1, total: 1, done: true })
+      notice(id.startsWith('asr') ? 'asr' : 'tts', `模型包已就绪：${id}`, 'success')
+    } catch (error) {
+      send('packs:progress', { id, file: '', received: 0, total: 0, error: error instanceof Error ? error.message : String(error) })
+      throw error
+    }
+    return packStatus(config.engineRoot)
+  })
+  ipcMain.handle('packs:cancel', (_e, id: string) => cancelPack(id as PackId))
+  ipcMain.handle('packs:remove', (_e, id: string) => {
+    removePack(config.engineRoot, id as PackId)
+    return packStatus(config.engineRoot)
   })
   ipcMain.handle('sep:models', () => listSepModels(config.engineRoot))
   ipcMain.handle('sep:download', async (_e, id: string) => {
@@ -922,6 +944,11 @@ function buildToolHost(): ToolHost {
       send('voices:changed', null)
     },
     history: () => storage.listHistory(),
+    packs: () => packStatus(config.engineRoot),
+    downloadPack: (id: string, onProgress: (file: string, received: number, total: number) => void) =>
+      downloadPack(config.engineRoot, id as PackId, config.hfSource === 'official' ? 'hf' : 'mirror', (p) =>
+        onProgress(p.file, p.received, p.total)
+      ),
     synthesize: (options, outputPath) => gpuQueue(() => doSynthesize(options, outputPath, true)),
     transcribe: (files, language) =>
       gpuQueue(async () => {

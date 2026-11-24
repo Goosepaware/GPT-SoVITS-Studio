@@ -31,6 +31,28 @@ export interface SepModelInfo {
   downloading: { received: number; total: number } | null
 }
 
+export interface ModelPackInfo {
+  id: string
+  label: string
+  note: string
+  group: 'tts' | 'asr'
+  /** Shipped with the app; downloading only repairs a deleted folder. */
+  bundled: boolean
+  installed: boolean
+  totalBytes: number
+  missingBytes: number
+  downloading: { received: number; total: number; file: string } | null
+}
+
+export interface ModelPackProgress {
+  id: string
+  file: string
+  received: number
+  total: number
+  done?: boolean
+  error?: string
+}
+
 export interface SepResult {
   vocals: string
   instrumental: string
@@ -72,6 +94,8 @@ export interface EngineValidation {
   valid: boolean
   missing: string[]
   runtime: string
+  /** Model packs that are not installed yet (downloadable). */
+  modelPacks: ModelPackInfo[]
 }
 
 export interface VramInfo {
@@ -409,6 +433,13 @@ export interface AppApi {
     diarize: (src: string, opts?: { numSpeakers?: number; language?: string; threshold?: number }) => Promise<DiarizeResult>
     voiceFromSpan: (src: string, start: number, end: number, name: string, transcript?: string, lang?: string) => Promise<Voice>
     saveScript: (src: string, lines: unknown[]) => Promise<string | null>
+  }
+  packs: {
+    list: () => Promise<ModelPackInfo[]>
+    download: (id: string) => Promise<ModelPackInfo[]>
+    cancel: (id: string) => Promise<void>
+    remove: (id: string) => Promise<ModelPackInfo[]>
+    onProgress: (cb: (p: ModelPackProgress) => void) => () => void
   }
   sep: {
     models: () => Promise<SepModelInfo[]>

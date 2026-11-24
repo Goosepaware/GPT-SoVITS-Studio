@@ -205,6 +205,22 @@ node $env:TEMP\\seg-test.mjs                                # 分段替换 / 撤
   行内停顿由 `fragmentInterval` 控制。
 - Agent 默认采样步数 8（界面仍默认 4），可按调用或按行覆盖；`list_history` 会带 `params`。
 
+## 模型下载
+
+便携包可以不含大模型（`scripts/prepare-engine.ps1 -SlimModels`），缺的部分在应用内下载。
+
+- `src/main/packs.ts`：模型包清单 + 下载器。每个包记录 HF 仓库、仓库内路径、目标路径、大小、sha256。
+  - 走 HF 的包：`tts-core`（lj1995/GPT-SoVITS）、`g2pw`（iqt-voice/G2PWModel）、
+    `asr-sensevoice`（FunAudioLLM/SenseVoiceSmall）、`asr-vad`（funasr/fsmn-vad）、`asr-spk`（funasr/campplus）
+  - 只有官方地址的：`langdetect`（fastText `lid.176.bin`）
+  - 每个文件先试当前源（设置里的 `hfSource`），失败自动换另一个域名；FSMN-VAD / CAM++ 标 `bundled`，
+    随包附带，下载入口只用于修复被删的目录
+- 下载：`<file>.part` 断点续传 + Range，大小校验 + 64 位 sha256 校验，成功后原子改名；
+  进度经 `packs:progress` 推给界面，MCP 侧计入 job 进度
+- 启动：`validation.valid` 只看运行环境和代码；模型缺失时进 `MissingModels` 引导页，
+  可以「稍后再说」直接进应用（TTS/ASR 会提示缺模型）
+- MCP：`list_models` 返回 `packs`，`download_models {packs?}` 下载缺的包（GB 级，先问用户）
+
 ## 构建便携版
 
 完整构建（复制约 10.5GB 的精简引擎，原整合包不动）：
