@@ -7,6 +7,7 @@
 **把 GPT-SoVITS v5turbo、SenseVoice、说话人分离与人声分离装进一个开箱即用的桌面工作台——还能直接交给 AI Agent 驱动。**
 
 [![Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-111111?style=flat-square)](#)
+[![Release](https://img.shields.io/badge/Download-v1.0.0%20UI%20%C2%B7%2080MB-111111?style=flat-square)](https://github.com/Goosepaware/GPT-SoVITS-Studio/releases/latest)
 [![Engine](https://img.shields.io/badge/TTS-GPT--SoVITS%20v5turbo-111111?style=flat-square)](#)
 [![ASR](https://img.shields.io/badge/ASR-SenseVoiceSmall-111111?style=flat-square)](#)
 [![MCP](https://img.shields.io/badge/MCP-27%20Tools-111111?style=flat-square)](#)
@@ -100,6 +101,8 @@
 - **绿色便携版**：解压即用，双击 `GPT-SoVITS-Studio.exe`。
 
 便携版按体积分成三种，功能完全一样，区别只是「首次启动要下载多少」：
+
+> **下载**：[Releases · v1.0.0](https://github.com/Goosepaware/GPT-SoVITS-Studio/releases/latest)（UI 版 80 MB）
 
 | 版本 | 压缩包 | 首次启动 | 适合谁 |
 |---|---|---|---|
