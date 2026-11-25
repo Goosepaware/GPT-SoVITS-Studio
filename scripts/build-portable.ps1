@@ -64,8 +64,9 @@ New-Item -ItemType Directory -Force -Path (Join-Path $release "data") | Out-Null
 
 if (-not $SkipEngine) {
   Write-Host "[4/5] Preparing slim engine (this copies several GB)..."
+  # prepare-engine runs with ErrorActionPreference=Stop and throws on failure, so its
+  # $LASTEXITCODE (left over from robocopy, which returns 0..7) must not be checked here.
   & (Join-Path $PSScriptRoot "prepare-engine.ps1") -Source $Source -Destination (Join-Path $release "engine") -Force -SlimModels:$SlimModels
-  if ($LASTEXITCODE -ne 0) { throw "prepare-engine failed" }
 } else {
   Write-Host "[4/5] Engine copy skipped (-SkipEngine)"
 }
