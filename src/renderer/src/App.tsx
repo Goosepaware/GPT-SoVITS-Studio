@@ -8,7 +8,7 @@ import { ToastStack } from './components/ToastStack'
 import { TopBar } from './components/TopBar'
 import { AsrPage } from './pages/AsrPage'
 import { AudioToolsPage } from './pages/AudioToolsPage'
-import { MissingModels } from './components/MissingModels'
+import { FirstRun } from './components/FirstRun'
 import { ModelsPage, type LogLine } from './pages/ModelsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { TtsPage } from './pages/TtsPage'
@@ -144,29 +144,22 @@ export default function App(): JSX.Element {
     )
   }
 
-  if (!bootstrap.validation.valid) {
-    return (
-      <div className="app-shell">
-        <TitleBar />
-        <SetupScreen bootstrap={bootstrap} onChanged={setBootstrap} />
-      </div>
-    )
-  }
-
   const packsMissing = (bootstrap.validation.modelPacks || []).filter((p) => !p.installed)
-  if (!packsGateDismissed && packsMissing.length > 0) {
-    return (
-      <div className="app-shell">
-        <TitleBar />
-        <MissingModels
-          bootstrap={bootstrap}
-          notify={notify}
-          onSkip={() => setPacksGateDismissed(true)}
-          onRefresh={() => void window.api.refreshBootstrap().then(setBootstrap)}
-        />
-        <ToastStack notices={notices} onDismiss={dismissNotice} />
-      </div>
-    )
+  if (!bootstrap.validation.valid || packsMissing.length > 0) {
+    if (!packsGateDismissed) {
+      return (
+        <div className="app-shell">
+          <TitleBar />
+          <FirstRun
+            bootstrap={bootstrap}
+            notify={notify}
+            onBootstrap={setBootstrap}
+            onSkip={() => setPacksGateDismissed(true)}
+          />
+          <ToastStack notices={notices} onDismiss={dismissNotice} />
+        </div>
+      )
+    }
   }
 
   return (

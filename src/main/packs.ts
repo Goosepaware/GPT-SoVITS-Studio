@@ -5,11 +5,26 @@
  * hard-to-mirror files (FSMN-VAD, CAM++) stay in the package and are only listed for repair.
  */
 import crypto from 'node:crypto'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { ModelPackInfo } from '@shared/types'
 
 export type PackId = 'tts-core' | 'g2pw' | 'langdetect' | 'asr-sensevoice' | 'asr-vad' | 'asr-spk'
+
+/**
+ * Runtime + inference code pack. The UI-only build ships without `engine/`, so the first run
+ * downloads this archive (torch cu128 covers sm_50..sm_120, i.e. GTX 10xx .. RTX 50xx) and
+ * extracts it into the engine folder. Models are separate packs.
+ */
+export const ENGINE_PACK = {
+  repo: 'goosepa/GPT-SoVITS-Studio-engine',
+  file: 'engine-v5-cu128.7z',
+  size: 2645900169,
+  sha256: 'B0437AB1BC4342EBD2FC043F3447D15B103AA7BB53E76BE44E8EC59F1EC1C5FD',
+  label: '运行环境（Python + PyTorch cu128 + 推理代码）',
+  note: '约 2.5 GB。支持 GTX 10 系到 RTX 50 系；模型另行下载。'
+}
 
 interface PackFile {
   /** Path inside the HF repo (or the single remote name). */
@@ -186,8 +201,7 @@ function fileOk(local: string, remote: PackFile): boolean {
   }
 }
 
-export function packStatus(engineRoot: string): ModelPackInfo[] {
-  return PACKS.map((pack) => {
+export function packStatus(engineRoot: string): ModelPackInfo[] {  return PACKS.map((pack) => {
     const files = packFilePaths(engineRoot, pack)
     const missing = files.filter((f) => !fileOk(f.local, f.remote))
     const total = files.reduce((a, f) => a + (f.remote.size || 0), 0)
@@ -348,4 +362,120 @@ export function removePack(engineRoot: string, id: PackId): void {
       }
     }
   }
+}
+
+// ------------------------------------------------------------ engine (runtime + code) pack
+
+export interface EngineState {
+  phase: 'download' | 'extract'
+  received: number
+  total: number
+  file: string
+  controller: AbortController
+}
+
+let engineState: EngineState | null = null
+
+export function engineProgress(): { phase: string; received: number; total: number; file: string } | null {
+  return engineState ? { phase: engineState.phase, received: engineState.received, total: engineState.total, file: engineState.file } : null
+}
+
+/** The engine folder is usable once the Python runtime and the inference entry point exist. */
+export function engineReady(engineRoot: string): boolean {
+  return (
+    !!engineRoot &&
+    fs.existsSync(path.join(engineRoot, 'runtime', 'python.exe')) &&
+    fs.existsSync(path.join(engineRoot, 'GPT_SoVITS', 'TTS_infer_pack', 'TTS.py'))
+  )
+}
+
+/** Bundled 7-Zip (LGPL) used to unpack the engine archive. */
+export function sevenZipPath(): string {
+  const packaged = process.resourcesPath ? path.join(process.resourcesPath, '7za.exe') : ''
+  if (packaged && fs.existsSync(packaged)) return packaged
+  const dev = path.join(process.cwd(), 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe')
+  return dev
+}
+
+function runSeven(exe: string, args: string[], signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(exe, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    let err = ''
+    proc.stderr.setEncoding('utf8')
+    proc.stderr.on('data', (c: string) => {
+      err = (err + c).slice(-800)
+    })
+    const onAbort = (): void => {
+      try {
+        if (proc.pid) spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true })
+      } catch {
+        proc.kill()
+      }
+    }
+    signal?.addEventListener('abort', onAbort)
+    proc.on('error', (e) => reject(e))
+    proc.on('exit', (code) => {
+      signal?.removeEventListener('abort', onAbort)
+      if (code === 0) resolve()
+      else reject(new Error(`解压失败 (code ${code}) ${err}`))
+    })
+  })
+}
+
+/**
+ * Download the engine archive and unpack it into `engineRoot`.
+ * Resumable; verifies size + sha256; extraction is done with the bundled 7za.
+ */
+export async function installEngine(opts: {
+  engineRoot: string
+  downloadsDir: string
+  source: 'hf' | 'mirror'
+  onProgress: (p: { phase: 'download' | 'extract'; received: number; total: number; file: string }) => void
+}): Promise<void> {
+  if (engineState) throw new Error('运行环境正在安装')
+  const controller = new AbortController()
+  const archive = path.join(opts.downloadsDir, ENGINE_PACK.file)
+  engineState = { phase: 'download', received: 0, total: ENGINE_PACK.size, file: ENGINE_PACK.file, controller }
+  try {
+    if (!fs.existsSync(archive) || fs.statSync(archive).size !== ENGINE_PACK.size) {
+      const remote: PackFile = { rel: ENGINE_PACK.file, size: ENGINE_PACK.size, sha256: ENGINE_PACK.sha256 }
+      const pack: PackDef = { id: 'tts-core', label: '', note: '', group: 'tts', repo: ENGINE_PACK.repo, targetDir: '', files: [remote] }
+      let lastErr: unknown = null
+      for (const url of sourceUrls(pack, remote, opts.source)) {
+        try {
+          await fetchTo(
+            url,
+            archive,
+            remote,
+            (received, total) => {
+              if (!engineState) return
+              engineState.received = received
+              engineState.total = total
+              opts.onProgress({ phase: 'download', received, total, file: ENGINE_PACK.file })
+            },
+            controller.signal
+          )
+          lastErr = null
+          break
+        } catch (error) {
+          lastErr = error
+          if (controller.signal.aborted) throw new Error('安装已取消')
+        }
+      }
+      if (lastErr) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
+    }
+    engineState.phase = 'extract'
+    engineState.received = 1
+    engineState.total = 1
+    opts.onProgress({ phase: 'extract', received: 1, total: 1, file: '解压中' })
+    fs.mkdirSync(opts.engineRoot, { recursive: true })
+    await runSeven(sevenZipPath(), ['x', archive, `-o${opts.engineRoot}`, '-y', '-bso0', '-bsp0'], controller.signal)
+    if (!engineReady(opts.engineRoot)) throw new Error('解压完成但运行环境不完整')
+  } finally {
+    engineState = null
+  }
+}
+
+export function cancelEngine(): void {
+  engineState?.controller.abort()
 }

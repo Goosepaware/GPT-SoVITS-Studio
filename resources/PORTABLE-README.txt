@@ -138,7 +138,7 @@ TTS + SenseVoice 在 8GB 显卡上也很紧。默认切换引擎会自动卸载�
   engine/models/separation/UVR-MDX-NET-Inst_HQ_3.onnx  伴奏优先，约 64MB
   在“音频处理”页点“下载”即可，可选 HuggingFace 官方或 hf-mirror 镜像。
 
-大模型（精简包不含，首次启动在应用内下载）
+大模型（精简包 / UI 版首次启动在应用内下载）
   engine/GPT_SoVITS/pretrained_models/s1v3.ckpt                        155MB
   engine/GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5turbo.pth  766MB
   engine/GPT_SoVITS/pretrained_models/gsv-v5-pretrained/vocoder.pth      58MB
@@ -149,6 +149,13 @@ TTS + SenseVoice 在 8GB 显卡上也很紧。默认切换引擎会自动卸载�
   engine/models/asr/SenseVoiceSmall/                                    896MB
   共约 3.4GB。打开应用会先跳到下载页；「模型与显存 → 模型下载」也能随时补下。
   FSMN-VAD（4MB）和 CAM++（27MB）随包附带。
+
+运行环境（仅 UI 版需要，首次启动自动下载）
+  engine/runtime/        Python 3.12 + PyTorch 2.7.1 cu128（约 7.0GB，压缩后约 2.5GB）
+  engine/GPT_SoVITS/     推理代码
+  engine/tools/          BWE 等工具
+  来源：huggingface.co/goosepa/GPT-SoVITS-Studio-engine（hf-mirror 同样可用）
+  支持 GTX 10 系到 RTX 50 系，单个包通用。也可以直接选择已有的 GPT-SoVITS 整合包目录。
 
 数据位置
 --------

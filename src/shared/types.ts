@@ -53,6 +53,13 @@ export interface ModelPackProgress {
   error?: string
 }
 
+export interface EngineInstallProgress {
+  phase: 'download' | 'extract'
+  received: number
+  total: number
+  file: string
+}
+
 export interface SepResult {
   vocals: string
   instrumental: string
@@ -440,6 +447,13 @@ export interface AppApi {
     cancel: (id: string) => Promise<void>
     remove: (id: string) => Promise<ModelPackInfo[]>
     onProgress: (cb: (p: ModelPackProgress) => void) => () => void
+  }
+  engine: {
+    /** Runtime + code folder present (UI-only builds start without it). */
+    status: () => Promise<{ ready: boolean; installing: EngineInstallProgress | null }>
+    install: () => Promise<{ ready: boolean }>
+    cancel: () => Promise<void>
+    onProgress: (cb: (p: EngineInstallProgress) => void) => () => void
   }
   sep: {
     models: () => Promise<SepModelInfo[]>

@@ -90,6 +90,16 @@ const api: AppApi = {
       return () => ipcRenderer.removeListener('packs:progress', listener)
     }
   },
+  engine: {
+    status: () => ipcRenderer.invoke('engine:status'),
+    install: () => ipcRenderer.invoke('engine:install'),
+    cancel: () => ipcRenderer.invoke('engine:cancel'),
+    onProgress: (cb) => {
+      const listener = (_event: Electron.IpcRendererEvent, p: Parameters<typeof cb>[0]): void => cb(p)
+      ipcRenderer.on('engine:progress', listener)
+      return () => ipcRenderer.removeListener('engine:progress', listener)
+    }
+  },
   sep: {
     models: () => ipcRenderer.invoke('sep:models'),    download: (id: string) => ipcRenderer.invoke('sep:download', id),
     cancelDownload: (id: string) => ipcRenderer.invoke('sep:cancel-download', id),

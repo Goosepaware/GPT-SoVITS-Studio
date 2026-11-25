@@ -211,8 +211,22 @@ node $env:TEMP\\seg-test.mjs                                # 分段替换 / 撤
   行内停顿由 `fragmentInterval` 控制。
 - Agent 默认采样步数 8（界面仍默认 4），可按调用或按行覆盖；`list_history` 会带 `params`。
 
-## 模型下载
+## 运行环境包（UI 版）
 
+`-NoEngine` 打出的便携包只有界面（约 0.26 GB），`engine/` 是空目录，首次启动由应用下载运行环境。
+
+- 归档：`huggingface.co/goosepa/GPT-SoVITS-Studio-engine/engine-v5-cu128.7z`（2.46 GB，sha256 `B0437AB1…`），
+  内容是 `runtime/` + `GPT_SoVITS/`（不含 pretrained_models 和 G2PW）+ `tools/`。
+- `packs.ts`：`ENGINE_PACK` 记录仓库/文件名/大小/sha256；`installEngine()` 下载（`.part` 断点续传 + 校验）
+  后用随包的 `resources/7za.exe`（7zip-bin，LGPL）解压到 `engine/`，再检查 `runtime/python.exe` 与
+  `GPT_SoVITS/TTS_infer_pack/TTS.py`。
+- 打包：`build-portable.ps1 -NoEngine` 跳过 prepare-engine 并把 `7za.exe` 复制到 `resources/`；
+  `package-releases.ps1 -UiOnly` 产出 `GPT-SoVITS-Studio-<ver>-ui.7z`。
+- 首启页 `FirstRun.tsx`：未装运行环境时提供「下载运行环境」和「选择已有整合包」两个入口；
+  装好后自动切到模型下载。
+- 单包通用：PyTorch 2.7.1+cu128 的 arch list 是 `sm_50…sm_120`，GTX 10 系到 RTX 50 系都能跑，不需要按显卡分版本。
+
+## 模型下载
 便携包可以不含大模型（`scripts/prepare-engine.ps1 -SlimModels`），缺的部分在应用内下载。
 
 - `src/main/packs.ts`：模型包清单 + 下载器。每个包记录 HF 仓库、仓库内路径、目标路径、大小、sha256。

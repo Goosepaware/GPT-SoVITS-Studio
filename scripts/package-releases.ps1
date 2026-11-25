@@ -3,6 +3,7 @@ param(
   [string]$Version = "1.0.0",
   [switch]$SkipSlim,
   [switch]$SkipFull,
+  [switch]$UiOnly,
   [int]$Level = 5
 )
 
@@ -17,11 +18,12 @@ if (-not (Test-Path $sampleVoice)) { Write-Warning "sample voice not found, the 
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
 function Build-Variant {
-  param([string]$Name, [switch]$Slim)
+  param([string]$Name, [switch]$Slim, [switch]$NoEngine)
 
-  Write-Host "=== building $Name (slim=$Slim) ==="
+  Write-Host "=== building $Name (slim=$Slim, uiOnly=$NoEngine) ==="
   $args = @{ Source = $Source; Force = $true }
   if ($Slim) { $args.SlimModels = $true }
+  if ($NoEngine) { $args.NoEngine = $true }
   # build-portable throws on failure; its $LASTEXITCODE can be a robocopy success code (1..7).
   & (Join-Path $PSScriptRoot "build-portable.ps1") @args
 
@@ -53,7 +55,11 @@ function Build-Variant {
 }
 
 $done = @()
-if (-not $SkipSlim) { $done += Build-Variant -Name "GPT-SoVITS-Studio-$Version-slim" -Slim }
-if (-not $SkipFull) { $done += Build-Variant -Name "GPT-SoVITS-Studio-$Version-full" }
+if ($UiOnly) {
+  $done += Build-Variant -Name "GPT-SoVITS-Studio-$Version-ui" -NoEngine
+} else {
+  if (-not $SkipSlim) { $done += Build-Variant -Name "GPT-SoVITS-Studio-$Version-slim" -Slim }
+  if (-not $SkipFull) { $done += Build-Variant -Name "GPT-SoVITS-Studio-$Version-full" }
+}
 Write-Host "=== done ==="
 $done | ForEach-Object { Write-Host $_ }

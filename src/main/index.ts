@@ -45,7 +45,7 @@ import {
 } from './segmentEdit'
 import { cutClip, extractAudio, fitLine, mixDub, type MixItem } from './dub'
 import { cancelSepDownload, cancelSeparation, downloadSepModel, listSepModels, removeSepModel, separate as runSeparate } from './separation'
-import { cancelPack, downloadPack, packStatus, removePack, type PackId } from './packs'
+import { cancelPack, cancelEngine, downloadPack, engineProgress, engineReady, installEngine, packStatus, removePack, type PackId } from './packs'
 import type { SepResult } from '@shared/types'
 import type { DiarizeResult } from '@shared/types'
 
@@ -511,6 +511,25 @@ function registerIpc(): void {
     fs.writeFileSync(r.filePath, JSON.stringify({ source: src, lines }, null, 1), 'utf-8')
     return r.filePath
   })
+  ipcMain.handle('engine:status', () => ({ ready: engineReady(config.engineRoot), installing: engineProgress() }))
+  ipcMain.handle('engine:install', async () => {
+    const engineRoot = config.engineRoot || path.join(paths.appRoot, 'engine')
+    const downloads = path.join(paths.dataRoot, 'downloads')
+    fs.mkdirSync(downloads, { recursive: true })
+    await installEngine({
+      engineRoot,
+      downloadsDir: downloads,
+      source: config.hfSource === 'official' ? 'hf' : 'mirror',
+      onProgress: (p) => send('engine:progress', p)
+    })
+    if (!config.engineRoot || config.engineRoot !== engineRoot) {
+      config.engineRoot = engineRoot
+      saveConfig(config)
+    }
+    send('engine:progress', { phase: 'extract', received: 1, total: 1, file: '完成' })
+    return { ready: engineReady(config.engineRoot) }
+  })
+  ipcMain.handle('engine:cancel', () => cancelEngine())
   ipcMain.handle('packs:list', () => packStatus(config.engineRoot))
   ipcMain.handle('packs:download', async (_e, id: string) => {
     const source = config.hfSource === 'official' ? 'hf' : 'mirror'

@@ -2,6 +2,7 @@
   [switch]$Force,
   [switch]$SkipEngine,
   [switch]$SlimModels,
+  [switch]$NoEngine,
   [string]$Source = ""
 )
 
@@ -19,7 +20,7 @@ if (-not $Source) {
     $Source = $candidate.FullName
   }
 }
-if (-not $SkipEngine -and -not $Source) {
+if (-not $SkipEngine -and -not $NoEngine -and -not $Source) {
   throw "GPT-SoVITS source package not found. Pass -Source <path> or place a GPT-SoVITS-v5-* folder next to this project."
 }
 
@@ -60,9 +61,14 @@ Copy-Item (Join-Path $project "package.json") (Join-Path $appDir "package.json")
 if ($LASTEXITCODE -gt 7) { throw "Failed to copy python workers ($LASTEXITCODE)" }
 Copy-Item (Join-Path $project "resources\icon.ico") (Join-Path $release "resources\icon.ico") -Force
 Copy-Item (Join-Path $project "resources\icon.png") (Join-Path $release "resources\icon.png") -Force
+$sevenZip = Join-Path $project "node_modules\7zip-bin\win\x64\7za.exe"
+if (Test-Path $sevenZip) { Copy-Item $sevenZip (Join-Path $release "resources\7za.exe") -Force }
 New-Item -ItemType Directory -Force -Path (Join-Path $release "data") | Out-Null
 
-if (-not $SkipEngine) {
+if ($NoEngine) {
+  Write-Host "[4/5] UI-only build: engine is downloaded on first run"
+  New-Item -ItemType Directory -Force -Path (Join-Path $release "engine") | Out-Null
+} elseif (-not $SkipEngine) {
   Write-Host "[4/5] Preparing slim engine (this copies several GB)..."
   # prepare-engine runs with ErrorActionPreference=Stop and throws on failure, so its
   # $LASTEXITCODE (left over from robocopy, which returns 0..7) must not be checked here.
