@@ -21,6 +21,9 @@
 
 它不是把 WebUI 套个壳。**GPT-SoVITS-Studio** 砍掉了训练、数据集切片等重型页面，只保留**推理、识别、音色管理、人声分离、译制配音**这几条高频链路，由 Electron 主进程直接调度 Python worker，并用原生 **MCP 服务** 把全部能力暴露给 Claude Code、Codex、Cursor、opencode 等 AI 客户端。
 
+> 底层引擎来自原作者仓库 [bilibili/GPT-SoVITS](https://github.com/bilibili/GPT-SoVITS)（即 RVC-Boss/GPT-SoVITS）。
+> 本项目只做桌面端整合与工作流，不修改模型本身；模型的训练与算法贡献属于原项目及其作者。
+
 <p align="center">
   <img src="assets/tts.png" width="92%" alt="GPT-SoVITS-Studio 主界面（黑白浅色主题）">
 </p>
