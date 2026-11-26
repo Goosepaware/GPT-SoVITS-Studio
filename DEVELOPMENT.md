@@ -237,7 +237,9 @@ node $env:TEMP\\seg-test.mjs                                # 分段替换 / 撤
   后用随包的 `resources/7za.exe`（7zip-bin，LGPL）解压到 `engine/`，再检查 `runtime/python.exe` 与
   `GPT_SoVITS/TTS_infer_pack/TTS.py`。
 - 打包：`build-portable.ps1 -NoEngine` 跳过 prepare-engine 并把 `7za.exe` 复制到 `resources/`；
-  `package-releases.ps1 -UiOnly` 产出 `GPT-SoVITS-Studio-<ver>-ui.7z`。
+  `package-releases.ps1 -UiOnly` 产出 `GPT-SoVITS-Studio-<ver>-ui.7z`，UI 版不带任何示例音色。
+- 完整版用 `-SkipSlim -VoiceLibrary <解压后的赛马娘音色库根目录>` 把 164 个 `.v5t` 打包到
+  `data/voices/赛马娘`（同时带上 `NOTICE.md` / `VOICE_ASSETS_LICENSE.md` 等授权文件）。
 - 首启页 `FirstRun.tsx`：未装运行环境时提供「下载运行环境」和「选择已有整合包」两个入口；
   装好后自动切到模型下载。
 - 单包通用：PyTorch 2.7.1+cu128 的 arch list 是 `sm_50…sm_120`，GTX 10 系到 RTX 50 系都能跑，不需要按显卡分版本。
