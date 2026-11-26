@@ -16,7 +16,7 @@ import type {
   Voice,
   WorkerEvent
 } from '@shared/types'
-import { loadConfig, saveConfig } from './config'
+import { loadConfig, normalizeSampleSteps, saveConfig } from './config'
 import { exportMp3, formatAsrFile, getDuration, killAllRuns, mimeForFile, prepareReference } from './media'
 import { scanModels } from './models'
 import { getAppPaths, engineMissing, isEngineRoot, type AppPaths } from './paths'
@@ -289,6 +289,9 @@ function registerIpc(): void {
       next.engineRoot = path.resolve(next.engineRoot)
     }
     if (!next.outputDir) next.outputDir = paths.outputDir
+    if (patch.defaultSampleSteps !== undefined) {
+      next.defaultSampleSteps = normalizeSampleSteps(patch.defaultSampleSteps, config.defaultSampleSteps || 8)
+    }
     config = next
     saveConfig(config)
     fs.mkdirSync(config.outputDir, { recursive: true })
@@ -1064,7 +1067,14 @@ function mcpStatus(): McpStatus {
 
 async function applyMcp(): Promise<void> {
   bridge = ensureBridgeInfo()
-  if (!mcpServer) mcpServer = new McpServer(new McpTools(buildToolHost()), () => config.mcp.token, app.getVersion())
+  if (!mcpServer) {
+    mcpServer = new McpServer(
+      new McpTools(buildToolHost()),
+      () => config.mcp.token,
+      app.getVersion(),
+      () => config.defaultSampleSteps || 8
+    )
+  }
   if (config.mcp.enabled) {
     if (!mcpServer.running || mcpServer.port !== config.mcp.port) await mcpServer.start(config.mcp.port)
   } else {

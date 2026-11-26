@@ -147,6 +147,7 @@ function finishStages(job: Job, state: 'done' | 'error'): Job {
 }
 
 export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingReference, voiceTransfer, onManageVoices }: Props): JSX.Element {
+  const configuredSteps = bootstrap.config.defaultSampleSteps || DEFAULT_PARAMS.sampleSteps
   const [gptId, setGptId] = useState('')
   const [sovitsId, setSovitsId] = useState('')
   const [ref, setRef] = useState<{ path: string; duration: number; name: string } | null>(null)
@@ -163,7 +164,7 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
   const [repetitionPenalty, setRepetitionPenalty] = useState(DEFAULT_PARAMS.repetitionPenalty)
   const [seed, setSeed] = useState(DEFAULT_PARAMS.seed)
   const [batchSize, setBatchSize] = useState(DEFAULT_PARAMS.batchSize)
-  const [sampleSteps, setSampleSteps] = useState(DEFAULT_PARAMS.sampleSteps)
+  const [sampleSteps, setSampleSteps] = useState(configuredSteps)
   const [fragmentInterval, setFragmentInterval] = useState(DEFAULT_PARAMS.fragmentInterval)
   const [job, setJob] = useState<Job | null>(null)
   const [result, setResult] = useState<TtsResult | null>(null)
@@ -207,6 +208,10 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
     if (!bootstrap.models.tts.gpt.find((item) => item.id === gptId)) setGptId(bootstrap.models.tts.gpt[0]?.id || '')
     if (!bootstrap.models.tts.sovits.find((item) => item.id === sovitsId)) setSovitsId(bootstrap.models.tts.sovits[0]?.id || '')
   }, [bootstrap.models, gptId, sovitsId])
+
+  useEffect(() => {
+    setSampleSteps(configuredSteps)
+  }, [configuredSteps])
 
   useEffect(() => {
     void window.api.voices.library().then((next) => { setVoices(next.voices); setFolders(next.folders) })
@@ -388,7 +393,7 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
     setRepetitionPenalty(DEFAULT_PARAMS.repetitionPenalty)
     setSeed(DEFAULT_PARAMS.seed)
     setBatchSize(DEFAULT_PARAMS.batchSize)
-    setSampleSteps(DEFAULT_PARAMS.sampleSteps)
+    setSampleSteps(configuredSteps)
     setFragmentInterval(DEFAULT_PARAMS.fragmentInterval)
   }
 

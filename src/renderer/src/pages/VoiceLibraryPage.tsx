@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Download, FolderOpen, FolderPlus, FolderUp, Move, Pencil, Play, RefreshCw, Search, Share2, Trash2, UserRound, Wand2 } from 'lucide-react'
+import { ArrowUpRight, Download, FolderOpen, FolderPlus, FolderUp, Move, Pencil, Play, RefreshCw, Search, Share2, Trash2, UserRound, X } from 'lucide-react'
 import type { Voice, VoiceFolderInfo, VoiceLibrary } from '@shared/types'
 import { AudioPlayer } from '../components/AudioPlayer'
 import { Modal } from '../components/Modal'
@@ -34,6 +34,7 @@ export function VoiceLibraryPage({ notify, onUseVoice }: Props): JSX.Element {
   const [moveTarget, setMoveTarget] = useState('')
   const [previewPath, setPreviewPath] = useState('')
   const [previewName, setPreviewName] = useState('')
+  const [previewToken, setPreviewToken] = useState(0)
   const previewUrl = useAudioUrl(previewPath)
   const dragging = useRef<string[]>([])
   const busy = useRef(false)
@@ -153,8 +154,10 @@ export function VoiceLibraryPage({ notify, onUseVoice }: Props): JSX.Element {
 
   async function preview(voice: Voice): Promise<void> {
     await run(async () => {
-      setPreviewPath(await window.api.voices.audio(voice.id))
+      const path = await window.api.voices.audio(voice.id)
+      setPreviewPath(path)
       setPreviewName(voice.name)
+      setPreviewToken((value) => value + 1)
     })
   }
 
@@ -247,8 +250,10 @@ export function VoiceLibraryPage({ notify, onUseVoice }: Props): JSX.Element {
           {previewPath && (
             <div className="voice-library-preview">
               <div><Play size={13} /><strong>{previewName}</strong></div>
-              {previewUrl.url ? <AudioPlayer src={previewUrl.url} compact /> : <span className="muted">读取音频…</span>}
-              <button type="button" className="icon-btn small" onClick={() => { setPreviewPath(''); setPreviewName('') }}><Trash2 size={13} /></button>
+              {previewUrl.url
+                ? <AudioPlayer key={`${previewUrl.url}:${previewToken}`} src={previewUrl.url} compact autoPlay />
+                : <span className="muted">读取音频…</span>}
+              <button type="button" className="icon-btn small" title="关闭试听" onClick={() => { setPreviewPath(''); setPreviewName('') }}><X size={13} /></button>
             </div>
           )}
 
@@ -280,7 +285,7 @@ export function VoiceLibraryPage({ notify, onUseVoice }: Props): JSX.Element {
                     <span>{voice.lastUsedAt ? `最近使用 ${new Date(voice.lastUsedAt).toLocaleDateString()}` : basename(voice.packagePath)}</span>
                     <div>
                       <button type="button" className="icon-btn small" title="试听" onClick={() => void preview(voice)}><Play size={13} /></button>
-                      <button type="button" className="icon-btn small" title="用作参考声音" onClick={() => { void touch(voice); onUseVoice(voice.id) }}><Wand2 size={13} /></button>
+                      <button type="button" className="icon-btn small" title="应用此音色" onClick={() => { void touch(voice); onUseVoice(voice.id) }}><ArrowUpRight size={13} /></button>
                       <button type="button" className="icon-btn small" title="编辑" onClick={() => openEdit(voice)}><Pencil size={13} /></button>
                       <button type="button" className="icon-btn small" title="移动" onClick={() => { setMoving([voice.id]); setMoveTarget(voice.folder) }}><FolderUp size={13} /></button>
                       <button type="button" className="icon-btn small" title="导出 .v5t" onClick={() => void window.api.voices.export(voice.id).then((file) => { if (file) { notify(`已导出 ${basename(file)}`, 'success'); void window.api.revealPath(file) } })}><Share2 size={13} /></button>

@@ -14,9 +14,11 @@ interface Props {
   durationHint?: number
   compact?: boolean
   className?: string
+  /** Start playing as soon as this player mounts / receives a new src. */
+  autoPlay?: boolean
 }
 
-export function AudioPlayer({ src, durationHint, compact = false, className }: Props): JSX.Element {
+export function AudioPlayer({ src, durationHint, compact = false, className, autoPlay = false }: Props): JSX.Element {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const wrapRef = useRef<HTMLDivElement | null>(null)
@@ -104,6 +106,31 @@ export function AudioPlayer({ src, durationHint, compact = false, className }: P
       if (activeAudio === audio) activeAudio = null
     }
   }, [src])
+
+  useEffect(() => {
+    if (!autoPlay || !src) return
+    const audio = audioRef.current
+    if (!audio) return
+    let cancelled = false
+    const start = async (): Promise<void> => {
+      setError(null)
+      if (activeAudio && activeAudio !== audio) activeAudio.pause()
+      activeAudio = audio
+      try {
+        await audio.play()
+        if (!cancelled) setPlaying(true)
+      } catch (playError) {
+        if (cancelled) return
+        setPlaying(false)
+        setError(audio.error?.message || audioErrorMessage(playError))
+        if (activeAudio === audio) activeAudio = null
+      }
+    }
+    void start()
+    return () => {
+      cancelled = true
+    }
+  }, [autoPlay, src])
 
   useEffect(() => {
     const animate = (): void => {

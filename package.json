@@ -1,6 +1,6 @@
 {
   "name": "gpt-sovits-studio",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "GPT-SoVITS v5turbo desktop studio",
   "main": "./out/main/index.js",
   "author": "local",

@@ -22,6 +22,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from engine_common import WorkerBase, activate_engine, vram_snapshot  # noqa: E402
+from korean_compat import prepare_korean_compat  # noqa: E402
 from timing import analyze_segment, detect_flags, to_float_mono  # noqa: E402
 
 FLAG_LABELS = {
@@ -61,6 +62,7 @@ class TtsWorker(WorkerBase):
         # Import after activate_engine() has prepared DLL directories and PATH.
         self.proto.log("activating bundled runtime")
         activate_engine(self.engine_root)
+        self.proto.log(f"korean text frontend: {prepare_korean_compat()}")
         self.proto.log("runtime activated; importing torch")
         import torch  # noqa: F401
         self.proto.log("torch imported; importing GPT-SoVITS")

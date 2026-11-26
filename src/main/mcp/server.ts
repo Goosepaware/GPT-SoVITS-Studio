@@ -17,18 +17,20 @@ type Notify = (method: string, params: Record<string, unknown>) => void
 
 const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05']
 
-const INSTRUCTIONS = [
-  'Local GPT-SoVITS v5turbo TTS studio (runs on this PC, GPU queue shared with the app).',
-  'Voices: list_voices -> synthesize (one text) or synthesize_script (many lines, manifest.json).',
-  'New voices: create_voice from a clean 3-10 s clip, or voice_from_span from a diarize reference. Both accept folder (nested paths allowed); list_voices returns folder.',
-  'Long tools (synthesize*, transcribe, diarize, create_voice, separate_audio, mix_dub, burn_subtitles, preview_segments) return a jobId if not done within `wait` s; then call job_status {jobId, wait}. Progress notifications are sent when a progressToken is given.',
-  'VRAM: models stay loaded between calls for speed. Do not unload during a multi-step task; call unload_models once the whole task is done (or when the user asks).',
-  'Fix single bad sentences: list_segments -> preview_segments -> commit_segment (revert_edits to undo).',
-  'Synthesis params: agent default sampleSteps 8 (adjust 4-32 as needed); fragmentInterval = pause between sentences inside one line.',
-  'Missing models: list_models shows packs; download_models {packs} fetches them (GBs, confirm with the user first).',
-  'Dubbing: separate_audio -> diarize (or import_subtitle) -> build_script (you segment sentences, server times them) -> translate -> synthesize_script with start/end -> mix_dub bgm:replace -> burn_subtitles (bilingual). See prompt localize_video.',
-  'Paths must be absolute local paths. See prompts for full workflows.'
-].join('\n')
+function instructions(sampleSteps: number): string {
+  return [
+    'Local GPT-SoVITS v5turbo TTS studio (runs on this PC, GPU queue shared with the app).',
+    'Voices: list_voices -> synthesize (one text) or synthesize_script (many lines, manifest.json).',
+    'New voices: create_voice from a clean 3-10 s clip, or voice_from_span from a diarize reference. Both accept folder (nested paths allowed); list_voices returns folder.',
+    'Long tools (synthesize*, transcribe, diarize, create_voice, separate_audio, mix_dub, burn_subtitles, preview_segments) return a jobId if not done within `wait` s; then call job_status {jobId, wait}. Progress notifications are sent when a progressToken is given.',
+    'VRAM: models stay loaded between calls for speed. Do not unload during a multi-step task; call unload_models once the whole task is done (or when the user asks).',
+    'Fix single bad sentences: list_segments -> preview_segments -> commit_segment (revert_edits to undo).',
+    `Synthesis params: default sampleSteps ${sampleSteps} (from app settings; pass params.sampleSteps per call to override, 4/8/16/32); fragmentInterval = pause between sentences inside one line.`,
+    'Missing models: list_models shows packs; download_models {packs} fetches them (GBs, confirm with the user first).',
+    'Dubbing: separate_audio -> diarize (or import_subtitle) -> build_script (you segment sentences, server times them) -> translate -> synthesize_script with start/end -> mix_dub bgm:replace -> burn_subtitles (bilingual). See prompt localize_video.',
+    'Paths must be absolute local paths. See prompts for full workflows.'
+  ].join('\n')
+}
 
 export class McpServer {
   private server: http.Server | null = null
@@ -42,7 +44,8 @@ export class McpServer {
   constructor(
     private tools: McpTools,
     private getToken: () => string,
-    private version: string
+    private version: string,
+    private getSampleSteps: () => number
   ) {}
 
   get running(): boolean {
@@ -198,7 +201,7 @@ export class McpServer {
           protocolVersion: PROTOCOLS.includes(asked) ? asked : PROTOCOLS[0],
           capabilities: { tools: { listChanged: false }, prompts: { listChanged: false }, resources: { listChanged: false }, logging: {} },
           serverInfo: { name: 'gpt-sovits-studio', title: 'GPT-SoVITS Studio', version: this.version },
-          instructions: INSTRUCTIONS
+          instructions: instructions(this.getSampleSteps())
         }
       }
       case 'ping':

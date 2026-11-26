@@ -11,6 +11,8 @@ export interface AppConfig {
   idleUnloadMinutes: number
   device: string
   half: boolean
+  /** Default diffusion sampling steps for the TTS page and MCP agents (4 / 8 / 16 / 32). */
+  defaultSampleSteps: number
   subtitle: SubtitleConfig
   mcp: McpConfig
   /** What the window close button does: ask each time, hide to tray, or quit. */

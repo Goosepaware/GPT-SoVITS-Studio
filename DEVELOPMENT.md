@@ -222,7 +222,8 @@ node $env:TEMP\\seg-test.mjs                                # 分段替换 / 撤
 - `build_script`：AI 提交逐字原文切好的句子，服务端算时间，避免 AI 自己编时间戳。
 - 带 `start/end` 的译制行在 `synthesize_script` 里默认 `cut0`（不再行内二次切句），
   行内停顿由 `fragmentInterval` 控制。
-- Agent 默认采样步数 8（界面仍默认 4），可按调用或按行覆盖；`list_history` 会带 `params`。
+- 默认采样步数在「设置 → 推理与显存」里调整（4 / 8 / 16 / 32，默认 8），界面与 Agent 共用；单次调用或逐行 `params.sampleSteps` 仍可覆盖，`list_history` 会带 `params`。
+- 韩语文本前端由 `python/korean_compat.py` 兜底：跳过 `g2pk2` 的 `pip install eunjeon` 和 `nltk.download('cmudict')`，没有 mecab 时用轻量分词，避免首次韩语合成卡死。
 
 ## 运行环境包（UI 版）
 

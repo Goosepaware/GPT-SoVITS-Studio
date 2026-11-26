@@ -12,6 +12,8 @@ interface Props {
   onBootstrap: (next: Bootstrap) => void
 }
 
+const SAMPLE_STEPS = [4, 8, 16, 32] as const
+
 function Toggle({ checked, onChange }: { checked: boolean; onChange: (value: boolean) => void }): JSX.Element {
   return (
     <button className={cn('toggle', checked && 'on')} onClick={() => onChange(!checked)} type="button" role="switch" aria-checked={checked}>
@@ -170,6 +172,22 @@ export function SettingsPage({ bootstrap, notify, onBootstrap }: Props): JSX.Ele
               <option value="cpu">CPU</option>
             </Select>
           </div>
+          <div className="setting-row">
+            <div><strong>默认采样步数</strong><span>语音合成页的初始值，也是 MCP AI 的默认值</span></div>
+            <div className="chip-row">
+              {SAMPLE_STEPS.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={cn('chip', form.defaultSampleSteps === value && 'active')}
+                  onClick={() => patch({ defaultSampleSteps: value })}
+                >
+                  {value}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="setting-note">4 最快，8 均衡，16 / 32 更精细但更慢；单次生成仍可在高级参数里临时调整。</div>
         </section>
 
         <section className="card settings-card">

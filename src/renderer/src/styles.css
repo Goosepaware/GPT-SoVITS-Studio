@@ -3782,11 +3782,15 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .voice-scope-btn.active { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .voice-library-preview {
+  position: sticky;
+  top: 8px;
+  z-index: 30;
   padding: 8px 10px;
   margin-bottom: 10px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--panel-soft);
+  background: var(--panel);
+  box-shadow: var(--shadow-soft);
 }
 .voice-library-preview > div { display: flex; align-items: center; gap: 6px; min-width: 110px; }
 .voice-library-preview .audio-player { flex: 1; }

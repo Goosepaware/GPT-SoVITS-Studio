@@ -7,7 +7,8 @@ import { detectEngineRoot, getAppPaths, isEngineRoot } from './paths'
 
 export { defaultSubtitleConfig }
 
-const CONFIG_VERSION = 5
+const CONFIG_VERSION = 6
+const SAMPLE_STEPS = [4, 8, 16, 32]
 
 interface StoredConfig extends AppConfig {
   version: number
@@ -26,6 +27,7 @@ export function defaultConfig(engineRoot: string, dataRoot: string): AppConfig {
     idleUnloadMinutes: 15,
     device: 'cuda:0',
     half: true,
+    defaultSampleSteps: 8,
     subtitle: defaultSubtitleConfig(),
     mcp: { enabled: false, autoStart: false, port: 39281, token: randomToken(), pathAllowlist: [] },
     closeAction: 'ask',
@@ -34,6 +36,11 @@ export function defaultConfig(engineRoot: string, dataRoot: string): AppConfig {
 }
 
 const num = (v: unknown, fallback: number): number => (Number.isFinite(Number(v)) ? Number(v) : fallback)
+
+export function normalizeSampleSteps(value: unknown, fallback = 8): number {
+  const steps = Number(value)
+  return SAMPLE_STEPS.includes(steps) ? steps : fallback
+}
 
 export function mergeSubtitle(raw: Partial<SubtitleConfig> | undefined): SubtitleConfig {
   const d = defaultSubtitleConfig()
@@ -94,6 +101,7 @@ export function loadConfig(): AppConfig {
       idleUnloadMinutes: num(raw.idleUnloadMinutes, 15),
       device: raw.device || 'cuda:0',
       half: raw.half !== false,
+      defaultSampleSteps: normalizeSampleSteps(raw.defaultSampleSteps, fallback.defaultSampleSteps),
       subtitle: mergeSubtitle(raw.subtitle),
       mcp: mergeMcp(raw.mcp, fallback.mcp),
       closeAction: raw.closeAction === 'tray' || raw.closeAction === 'quit' ? raw.closeAction : 'ask',

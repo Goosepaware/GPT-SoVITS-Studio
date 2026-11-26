@@ -132,7 +132,7 @@ const SYNTH_DEFAULTS: Json = {
   repetitionPenalty: 1.35,
   seed: -1,
   batchSize: 1,
-  // Agent default: 8 steps (better prosody than the UI's fast 4); the agent may override per call / per line.
+  // Last-resort fallback; the app setting (defaultSampleSteps) overrides this.
   sampleSteps: 8,
   fragmentInterval: 0.3,
   parallelInfer: true,
@@ -142,7 +142,7 @@ const SYNTH_DEFAULTS: Json = {
 const PARAMS_SCHEMA = {
   type: 'object',
   description:
-    'Optional inference params: speed (0.5-2), sampleSteps (4|8|16|32; default 8 for agents, raise to 16 for hero lines, 4 for fast drafts), seed (-1 random), temperature, topK, topP, repetitionPenalty, fragmentInterval (silence between sentences inside one line, s; default 0.3, dubbing 0.1-0.2, narration 0.3-0.5), splitMethod (cut0 = no split, cut5 = by punctuation; timed dubbing lines default to cut0), maxRetries (default 2), gptPath, sovitsPath.',
+    'Optional inference params: speed (0.5-2), sampleSteps (4|8|16|32; default = app setting 设置 → 默认采样步数, raise to 16 for hero lines, 4 for fast drafts), seed (-1 random), temperature, topK, topP, repetitionPenalty, fragmentInterval (silence between sentences inside one line, s; default 0.3, dubbing 0.1-0.2, narration 0.3-0.5), splitMethod (cut0 = no split, cut5 = by punctuation; timed dubbing lines default to cut0), maxRetries (default 2), gptPath, sovitsPath.',
   additionalProperties: true
 }
 
@@ -390,9 +390,13 @@ export class McpTools {
     const promptText = str(a.promptText) || voice?.transcript
     if (!ref || !promptText) throw new Error('Provide voice (name or id), or both refAudioPath and promptText')
     const params = (a.params && typeof a.params === 'object' ? a.params : {}) as Json
+    const configuredSteps = this.host.config().defaultSampleSteps || Number(SYNTH_DEFAULTS.sampleSteps) || 8
+    const requestedSteps = Number(params.sampleSteps)
+    const sampleSteps = Number.isFinite(requestedSteps) && requestedSteps > 0 ? Math.round(requestedSteps) : configuredSteps
     return {
       ...SYNTH_DEFAULTS,
       ...params,
+      sampleSteps,
       text,
       textLang: str(a.textLang) || params.textLang || SYNTH_DEFAULTS.textLang,
       refAudioPath: ref,
@@ -1088,7 +1092,7 @@ export const MCP_PROMPTS = [
 3. YOU segment: build_script {items, sentences:[{text}...], outputDir} where sentences = the transcript re-cut into complete natural sentences, verbatim and in order. The server computes start/end. Review lines with matched:false.
 4. For each speaker: voice_from_span {sourcePath: vocals, start, end, name, transcript} using the best diarize reference (skip if the user maps speakers to existing voices).
 5. Translate each script line; keep spoken length close to its slot (CJK ~4-5 chars/s). Keep the original text for subtitles.
-6. synthesize_script {outputDir, lines:[{id, text, voice, start, end}], params:{sampleSteps:8, fragmentInterval:0.15}}. Timed lines are not re-split (cut0) and are fitted to their window; for indices in "overflow" shorten the translation and regenerate those lines (same id/outputDir). Raise sampleSteps to 16 for lines that sound rough.
+6. synthesize_script {outputDir, lines:[{id, text, voice, start, end}], params:{fragmentInterval:0.15}}. Timed lines are not re-split (cut0) and are fitted to their window; for indices in "overflow" shorten the translation and regenerate those lines (same id/outputDir). sampleSteps defaults to the app setting; raise it to 16 for lines that sound rough.
 7. mix_dub {basePath: video, manifestPath: <outputDir>/manifest.json, bedPath: instrumental, bgm:'replace', outputPath: dub.mp4}.
 8. burn_subtitles {videoPath: dub.mp4, outputPath: final.mp4, primary: <outputDir>/manifest.json, secondary: <outputDir>/script.json, mode:'hard'} for bilingual subtitles (mode 'soft' if the user wants a toggleable track).
 9. unload_models once at the end. Check speaker labels with the user when confidence is low.`
