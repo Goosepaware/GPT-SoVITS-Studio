@@ -273,6 +273,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1 -
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-release.ps1
 ```
 
+打两个发布包（UI 版不含任何示例音色；完整版内置赛马娘音色库）：
+
+```powershell
+# UI 版
+pwsh -File scripts/package-releases.ps1 -Source <整合包目录> -Version 1.1.1 -UiOnly
+
+# 完整版；VoiceLibrary 指向解压后的 umamusume_tts_voice_library_164_v1.0.0 根目录
+pwsh -File scripts/package-releases.ps1 -Source <整合包目录> -Version 1.1.1 -SkipSlim -VoiceLibrary <赛马娘音色库根目录>
+```
+
 输出：
 
 ```text
