@@ -942,17 +942,21 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
                   <button className="btn ghost small" onClick={() => void exportSubtitle(result.filePath)} disabled={!result.timingPath}>
                     <Captions size={14} /> 导出字幕
                   </button>
-                  <select
-                    className="split-select"
+                  <Select
                     value={subtitleFormat}
-                    onChange={(event) => setSubtitleFormat(event.target.value as SubtitleFormat)}
+                    onChange={(format) => setSubtitleFormat(format as SubtitleFormat)}
                     disabled={!result.timingPath}
-                    aria-label="字幕格式"
+                    ariaLabel="字幕格式"
+                    className="split-format-select"
+                    menuWidth={132}
+                    align="right"
+                    placement="top"
+                    compact
                   >
                     {SUBTITLE_FORMATS.map((f) => (
                       <option key={f} value={f}>{FORMAT_LABEL[f]}</option>
                     ))}
-                  </select>
+                  </Select>
                 </span>
                 <button className="btn ghost small danger-text" onClick={() => void discardResult()}><Trash2 size={14} /> 放弃</button>
                 <button className="btn ghost small" onClick={() => void discardAndRetry()} disabled={!canGenerate}><RotateCcw size={14} /> 放弃并重试</button>

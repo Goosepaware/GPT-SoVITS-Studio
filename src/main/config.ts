@@ -7,7 +7,7 @@ import { detectEngineRoot, getAppPaths, isEngineRoot } from './paths'
 
 export { defaultSubtitleConfig }
 
-const CONFIG_VERSION = 4
+const CONFIG_VERSION = 5
 
 interface StoredConfig extends AppConfig {
   version: number
@@ -27,7 +27,7 @@ export function defaultConfig(engineRoot: string, dataRoot: string): AppConfig {
     device: 'cuda:0',
     half: true,
     subtitle: defaultSubtitleConfig(),
-    mcp: { enabled: false, port: 39281, token: randomToken(), pathAllowlist: [] },
+    mcp: { enabled: false, autoStart: false, port: 39281, token: randomToken(), pathAllowlist: [] },
     closeAction: 'ask',
     hfSource: 'mirror'
   }
@@ -58,6 +58,7 @@ export function mergeMcp(raw: Partial<McpConfig> | undefined, fallback: McpConfi
   const port = Number(r.port)
   return {
     enabled: r.enabled === true,
+    autoStart: r.autoStart === true,
     port: Number.isInteger(port) && port > 1024 && port < 65536 ? port : fallback.port,
     token: typeof r.token === 'string' && r.token.length >= 16 ? r.token : fallback.token,
     pathAllowlist: Array.isArray(r.pathAllowlist) ? r.pathAllowlist.filter((p) => typeof p === 'string' && p.trim()) : []

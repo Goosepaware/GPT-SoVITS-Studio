@@ -19,7 +19,8 @@ export function useAudioUrl(filePath: string | null | undefined): { url: string 
       .readAudio(filePath)
       .then(({ data, mime }) => {
         if (!alive) return
-        const blob = new Blob([data.buffer as ArrayBuffer], { type: mime })
+        const bytes = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
+        const blob = new Blob([bytes], { type: mime })
         objectUrl = URL.createObjectURL(blob)
         setUrl(objectUrl)
         setLoading(false)

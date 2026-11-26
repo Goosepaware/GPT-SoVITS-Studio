@@ -11,13 +11,49 @@ import type { McpClientInfo } from '@shared/types'
 
 const SERVER_NAME = 'gpt-sovits-studio'
 
-const BRIDGE_JS = String.raw`// GPT-SoVITS-Studio MCP stdio bridge (auto-generated, do not edit)
-const fs = require('fs'), http = require('http'), cp = require('child_process'), readline = require('readline')
-const CONFIG = process.env.GSV_CONFIG || require('path').join(__dirname, '..', 'config.json')
+export const BRIDGE_JS = String.raw`// GPT-SoVITS-Studio MCP stdio bridge (auto-generated, do not edit)
+const fs = require('fs'), http = require('http'), cp = require('child_process'), readline = require('readline'), path = require('path')
+const CONFIG = process.env.GSV_CONFIG || path.join(__dirname, '..', 'config.json')
 const EXE = process.env.GSV_EXE || ''
 const APP = process.env.GSV_APP || ''
+const LOCK = path.join(__dirname, 'service-launch.lock')
+const LOG = path.join(__dirname, '..', 'logs', 'mcp-bridge.log')
 function cfg() { try { return JSON.parse(fs.readFileSync(CONFIG, 'utf8')).mcp || {} } catch { return {} } }
+function log(message) {
+  try {
+    fs.mkdirSync(path.dirname(LOG), { recursive: true })
+    fs.appendFileSync(LOG, new Date().toISOString() + ' [bridge ' + process.pid + ' <- ' + process.ppid + '] ' + message + '\n')
+  } catch {}
+}
 function out(obj) { process.stdout.write((typeof obj === 'string' ? obj.replace(/\n/g, ' ') : JSON.stringify(obj)) + '\n') }
+function healthy() {
+  const c = cfg()
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port: c.port || 39281, path: '/health' }, (res) => {
+      res.resume(); res.on('end', () => resolve(res.statusCode === 200))
+    })
+    req.setTimeout(1500, () => req.destroy())
+    req.on('error', () => resolve(false))
+  })
+}
+function claimLaunch() {
+  try {
+    const fd = fs.openSync(LOCK, 'wx')
+    fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }))
+    fs.closeSync(fd)
+    return true
+  } catch (e) {
+    if (e.code !== 'EEXIST') throw e
+    try {
+      if (Date.now() - fs.statSync(LOCK).mtimeMs > 30000) {
+        fs.unlinkSync(LOCK)
+        return claimLaunch()
+      }
+    } catch {}
+    return false
+  }
+}
+function releaseLaunch() { try { fs.unlinkSync(LOCK) } catch {} }
 function post(body) {
   const c = cfg()
   return new Promise((resolve, reject) => {
@@ -47,12 +83,41 @@ function post(body) {
 let launched = false
 async function send(body) {
   for (let i = 0; i < 90; i++) {
-    try { return await post(body) } catch (e) {
+    try {
+      const result = await post(body)
+      releaseLaunch()
+      return result
+    } catch (e) {
       if (e.code !== 'ECONNREFUSED' && e.code !== 'ECONNRESET') throw e
-      if (!launched && EXE && fs.existsSync(EXE)) {
+      // A reset usually means the app is restarting; wait for it instead of
+      // treating every transient disconnect as permission to launch a process.
+      if (e.code === 'ECONNRESET') {
+        await new Promise((r) => setTimeout(r, 1000))
+        continue
+      }
+      if (!launched) {
+        const c = cfg()
+        if (!c.enabled || c.autoStart !== true) {
+          throw new Error('GPT-SoVITS-Studio is not running; MCP auto-start is disabled in the app settings')
+        }
+        if (!EXE || !fs.existsSync(EXE)) throw new Error('GPT-SoVITS-Studio executable not found: ' + EXE)
         launched = true
-        const env = Object.assign({}, process.env); delete env.ELECTRON_RUN_AS_NODE
-        cp.spawn(EXE, (APP ? [APP] : []).concat(['--headless']), { detached: true, stdio: 'ignore', env }).unref()
+        if (claimLaunch()) {
+          try {
+            // Another bridge may have won the race and finished starting it.
+            if (await healthy()) {
+              releaseLaunch()
+              continue
+            }
+            log('auto-starting silent service with --gsv-service')
+            const env = Object.assign({}, process.env); delete env.ELECTRON_RUN_AS_NODE
+            cp.spawn(EXE, (APP ? [APP] : []).concat(['--gsv-service']), { detached: true, stdio: 'ignore', env }).unref()
+          } catch (error) {
+            releaseLaunch()
+            launched = false
+            throw error
+          }
+        }
       }
       await new Promise((r) => setTimeout(r, 1000))
     }
@@ -290,5 +355,5 @@ export function agentSetupPrompt(b: BridgeInfo, url: string, token: string): str
 步骤：
 1. 判断你所在的客户端（Claude Code / Codex / Cursor / opencode / Kiro / Gemini CLI / VS Code / Cline 等），找到它的 MCP 配置，按该客户端格式加入上面的服务器；有命令行方式（如 claude mcp add）优先用命令行。修改文件前先备份，保留已有的其他服务器。
 2. 告诉我是否需要重启客户端；重启后调用 studio_status 和 list_voices 验证。
-软件未运行时 stdio 方式会自动以托盘模式启动它。`
+软件未运行时，只有设置中开启「允许 Agent 自动启动」才会静默后台启动；否则请先打开 GPT-SoVITS-Studio。`
 }

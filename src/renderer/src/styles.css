@@ -1480,6 +1480,19 @@ input[type="range"]::-webkit-slider-thumb {
 .audio-total {
   color: var(--faint);
 }
+.audio-error {
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--danger);
+  font-size: 9px;
+}
+.audio-player.compact .audio-error {
+  max-width: 96px;
+  font-size: 8px;
+}
 
 .progress-card {
   margin-top: 13px;
@@ -3599,7 +3612,19 @@ input[type="range"]::-webkit-slider-thumb {
 .small-input { width: 150px; }
 .split-btn { display: inline-flex; align-items: stretch; }
 .split-btn .btn { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.split-select { font-size: 12px; padding: 0 4px; background: transparent; color: inherit; border: 1px solid var(--border, rgba(127,127,127,.35)); border-left: none; }
+.split-btn .split-format-select { width: 96px; flex: 0 0 96px; }
+.split-btn .split-format-select .custom-select-trigger {
+  height: 30px;
+  padding: 5px 8px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+  border-left: 0;
+  background: transparent;
+  font-size: 11px;
+}
+.split-btn .split-format-select .custom-select-value { min-width: 0; }
 .mcp-clients { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; margin: 8px 0; }
 .mcp-client { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border, rgba(127,127,127,.25)); }
 .mcp-client > div:first-child { display: flex; flex-direction: column; }

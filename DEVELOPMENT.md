@@ -110,9 +110,10 @@ node scripts/probe-worker.mjs asr     # 直接测试 ASR worker
 要点：
 
 - 界面与 agent 的合成、识别都走 `gpuQueue`，界面任务优先；agent 任务会自动加载模型（底模）。
-- 关闭窗口后如果 MCP 在运行，进程留在托盘继续服务；`--headless` 启动则不建窗口。
-- 桥接发现服务没开时，会用 `--headless` 拉起程序（dev 下靠 `GSV_APP` 传 app 路径）。
-- 日志在 `data/logs/mcp.log`；设置页显示实时活动。
+- 关闭窗口后如果 MCP 在运行，进程留在托盘继续服务；`--gsv-service` 启动则不建窗口、不建托盘。
+- `mcp.autoStart` 默认 `false`。只有它和 `mcp.enabled` 同时为 `true`，桥接才可以用 `--gsv-service` 拉起程序；多个桥接用原子锁协调，只启动一个进程。
+- 为兼容已生成的旧桥接，主进程仍识别旧参数 `--headless`，但新桥接不再使用这个 Chromium 保留开关。
+- 日志在 `data/logs/mcp.log` 和 `data/logs/mcp-bridge.log`；设置页显示实时活动。
 
 本地测试脚本（不提交）：
 
@@ -121,7 +122,8 @@ node --experimental-strip-types scripts/test-subtitles.ts   # 字幕六种格式
 node --experimental-strip-types scripts/test-clients.mjs    # 客户端配置写入（沙箱 HOME）
 node scripts/test-mcp.mjs                                   # HTTP 协议 + 真实合成
 node scripts/test-mcp-stream.mjs                            # 协议协商 / SSE 进度 / 取消
-node scripts/test-stdio.mjs                                 # stdio 桥接 + 自动拉起
+node scripts/test-stdio.mjs                                 # stdio 桥接（需手动开启 autoStart）
+node scripts/test-mcp-autostart.mjs                         # 自动启动默认关闭 + 并发只拉一个
 node scripts/test-mcp-p2.mjs                                # 分段编辑 / 说话人 / 混音（真实推理）
 & node_modules\\.bin\\esbuild.cmd scripts/test-segment-edit.mjs --bundle --platform=node --format=esm --outfile=$env:TEMP\\seg-test.mjs
 node $env:TEMP\\seg-test.mjs                                # 分段替换 / 撤销单元测试
@@ -147,12 +149,20 @@ node $env:TEMP\\seg-test.mjs                                # 分段替换 / 撤
 
 ## 托盘与关闭行为
 
-- 托盘常驻，右键菜单每次按当前状态重建（`refreshTray` 每 5 秒也刷一次）：TTS/ASR 状态、显存、
+- 托盘常驻，右键时才构建并 `popUpContextMenu()`；不使用 `setContextMenu()`，也不定时重建原生菜单。
+  右键事件延迟 100ms，避免 Electron/Windows 在右键按下时误弹任务栏菜单。菜单包含 TTS/ASR 状态、显存、
   卸载 TTS / ASR / 全部、MCP 开关、打开输出目录、退出。
 - 卸载走 `unloadEngines()`，与界面按钮、MCP `unload_models` 共用一条路径。
 - 窗口关闭交给 `mainWindow.on('close')`：`config.closeAction` 为 `ask` 时发 `window:close-request`，
   渲染层弹 `CloseDialog`，选择通过 `window:close-choice` 回传；`tray` 直接 `hideToTray()`，`quit` 直接退出。
 - `hideToTray()` 前先等 220ms，让弹窗的退出动画跑完（窗口隐藏后 rAF 暂停，动画会卡在中间）。
+
+## Windows 音频兼容
+
+- Electron 33 / Chromium 130 在部分 Windows 11 音频栈上初始化沙箱化独立音频服务失败，表现为
+  `AUDIO_RENDERER_ERROR`。主进程默认加 `--disable-features=AudioServiceOutOfProcess`，让音频服务回到主进程。
+- 特殊机器可设 `GSV_AUDIO_SERVICE_OUT_OF_PROCESS=1` 恢复 Chromium 默认行为。
+- 波形解码使用 `OfflineAudioContext`，不再为每条历史创建硬件音频上下文。
 
 ## 说话人分离与译制
 
@@ -217,6 +227,8 @@ node $env:TEMP\\seg-test.mjs                                # 分段替换 / 撤
 
 - 归档：`huggingface.co/goosepa/GPT-SoVITS-Studio-engine/engine-v5-cu128.7z`（2.46 GB，sha256 `B0437AB1…`），
   内容是 `runtime/` + `GPT_SoVITS/`（不含 pretrained_models 和 G2PW）+ `tools/`。
+- 运行环境包与应用版本解耦：只改 Electron / React / MCP 代码时不需要重做或重传引擎包，
+  UI 版会继续复用同一个 URL、大小和 sha256。
 - `packs.ts`：`ENGINE_PACK` 记录仓库/文件名/大小/sha256；`installEngine()` 下载（`.part` 断点续传 + 校验）
   后用随包的 `resources/7za.exe`（7zip-bin，LGPL）解压到 `engine/`，再检查 `runtime/python.exe` 与
   `GPT_SoVITS/TTS_infer_pack/TTS.py`。

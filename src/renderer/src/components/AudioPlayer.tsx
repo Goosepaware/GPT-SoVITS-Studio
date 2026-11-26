@@ -2,6 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import { Pause, Play } from 'lucide-react'
 import { cn, formatDuration } from '../lib/format'
 
+let activeAudio: HTMLAudioElement | null = null
+
+function audioErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.name === 'NotAllowedError') return '浏览器阻止了自动播放，请再点一次播放'
+  return error instanceof Error ? error.message : '音频播放失败'
+}
+
 interface Props {
   src: string | null
   durationHint?: number
@@ -15,6 +22,7 @@ export function AudioPlayer({ src, durationHint, compact = false, className }: P
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const peaksRef = useRef<number[]>([])
   const [playing, setPlaying] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [current, setCurrent] = useState(0)
   const [duration, setDuration] = useState(durationHint || 0)
   const [themeRevision, setThemeRevision] = useState(0)
@@ -22,12 +30,15 @@ export function AudioPlayer({ src, durationHint, compact = false, className }: P
 
   useEffect(() => {
     setPlaying(false)
+    setError(null)
     setCurrent(0)
     setDuration(durationHint || 0)
     peaksRef.current = []
     if (!src) return
     let cancelled = false
-    const context = new AudioContext()
+    // Waveform decoding must not open the hardware audio device. Creating one
+    // AudioContext per history row used to exhaust/perturb the audio backend.
+    const context = new OfflineAudioContext(1, 1, 48000)
     fetch(src)
       .then((response) => response.arrayBuffer())
       .then((buffer) => context.decodeAudioData(buffer))
@@ -53,10 +64,7 @@ export function AudioPlayer({ src, durationHint, compact = false, className }: P
         draw()
       })
       .catch(() => {
-        // Keep the placeholder waveform; playback still works.
-      })
-      .finally(() => {
-        void context.close()
+        // Keep the placeholder waveform; playback is independent of decoding.
       })
     return () => {
       cancelled = true
@@ -73,14 +81,27 @@ export function AudioPlayer({ src, durationHint, compact = false, className }: P
     const onEnd = (): void => {
       setPlaying(false)
       setCurrent(0)
+      if (activeAudio === audio) activeAudio = null
+    }
+    const onPause = (): void => setPlaying(false)
+    const onError = (): void => {
+      setPlaying(false)
+      setError(audio.error?.message || '音频输出初始化失败，请检查默认播放设备')
+      if (activeAudio === audio) activeAudio = null
     }
     audio.addEventListener('timeupdate', onTime)
     audio.addEventListener('loadedmetadata', onMeta)
     audio.addEventListener('ended', onEnd)
+    audio.addEventListener('pause', onPause)
+    audio.addEventListener('error', onError)
     return () => {
       audio.removeEventListener('timeupdate', onTime)
       audio.removeEventListener('loadedmetadata', onMeta)
       audio.removeEventListener('ended', onEnd)
+      audio.removeEventListener('pause', onPause)
+      audio.removeEventListener('error', onError)
+      audio.pause()
+      if (activeAudio === audio) activeAudio = null
     }
   }, [src])
 
@@ -170,12 +191,21 @@ export function AudioPlayer({ src, durationHint, compact = false, className }: P
     })
   }
 
-  function toggle(): void {
+  async function toggle(): Promise<void> {
     const audio = audioRef.current
     if (!audio) return
+    setError(null)
     if (audio.paused) {
-      void audio.play()
-      setPlaying(true)
+      if (activeAudio && activeAudio !== audio) activeAudio.pause()
+      activeAudio = audio
+      try {
+        await audio.play()
+        setPlaying(true)
+      } catch (playError) {
+        setPlaying(false)
+        setError(audio.error?.message || audioErrorMessage(playError))
+        if (activeAudio === audio) activeAudio = null
+      }
     } else {
       audio.pause()
       setPlaying(false)
@@ -194,7 +224,13 @@ export function AudioPlayer({ src, durationHint, compact = false, className }: P
 
   return (
     <div className={cn('audio-player', compact && 'compact', className)}>
-      <button className="audio-play" onClick={toggle} disabled={!src}>
+      <button
+        className="audio-play"
+        onClick={() => void toggle()}
+        disabled={!src}
+        title={error || (playing ? '暂停' : '播放')}
+        aria-label={error || (playing ? '暂停' : '播放')}
+      >
         {playing ? <Pause size={compact ? 15 : 17} fill="currentColor" /> : <Play size={compact ? 15 : 17} fill="currentColor" />}
       </button>
       <div className="audio-wave" ref={wrapRef} onClick={seek}>
@@ -204,6 +240,7 @@ export function AudioPlayer({ src, durationHint, compact = false, className }: P
         <span>{formatDuration(current)}</span>
         <span className="audio-total">{formatDuration(duration)}</span>
       </div>
+      {error && <span className="audio-error" role="alert">{error}</span>}
       <audio ref={audioRef} src={src || undefined} preload="metadata" />
     </div>
   )

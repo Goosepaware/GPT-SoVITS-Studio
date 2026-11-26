@@ -154,6 +154,13 @@ export function AiConnectCard({
         <Toggle checked={m.enabled} onChange={(v) => patch({ mcp: { ...m, enabled: v } })} />
       </div>
       <div className="setting-row">
+        <div>
+          <strong>允许 Agent 自动启动</strong>
+          <span>软件退出后，MCP 客户端可静默拉起后台服务；默认关闭，且不会出现托盘图标</span>
+        </div>
+        <Toggle checked={m.autoStart} onChange={(v) => patch({ mcp: { ...m, autoStart: v } })} />
+      </div>
+      <div className="setting-row">
         <div><strong>端口</strong><span>仅监听 127.0.0.1，修改后保存生效</span></div>
         <input className="tiny-input" type="number" min={1025} max={65535} value={m.port} onChange={(e) => patch({ mcp: { ...m, port: Number(e.target.value) || 39281 } })} />
       </div>

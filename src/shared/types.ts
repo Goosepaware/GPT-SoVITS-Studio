@@ -220,6 +220,8 @@ export interface SubtitleConfig {
 
 export interface McpConfig {
   enabled: boolean
+  /** Allow an MCP client to launch a silent background service when the app is closed. */
+  autoStart: boolean
   port: number
   token: string
   pathAllowlist: string[]

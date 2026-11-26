@@ -31,8 +31,9 @@ export function DiarizePanel({ notify }: Props): JSX.Element {
     const a = new Audio(audio.url)
     a.addEventListener('loadedmetadata', () => {
       a.currentTime = start
-      void a.play()
+      void a.play().catch((error) => notify(errText(error), 'error'))
     })
+    a.addEventListener('error', () => notify(a.error?.message || '音频播放失败', 'error'))
     a.addEventListener('timeupdate', () => a.currentTime >= end && a.pause())
   }
 

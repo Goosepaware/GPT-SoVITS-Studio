@@ -54,6 +54,13 @@ const execFileAsync = promisify(execFile)
 app.setName('GPT-SoVITS-Studio')
 if (process.platform === 'win32') app.setAppUserModelId('local.gptsovits.studio')
 
+// Chromium's sandboxed out-of-process audio service fails to initialize on some
+// Windows 11 audio stacks (AUDIO_RENDERER_ERROR). Keep the service in the main
+// process unless the user explicitly opts back into the Chromium default.
+if (process.platform === 'win32' && process.env.GSV_AUDIO_SERVICE_OUT_OF_PROCESS !== '1') {
+  app.commandLine.appendSwitch('disable-features', 'AudioServiceOutOfProcess')
+}
+
 // On some Windows machines (system ACLs altered by cleanup tools, or AV/optimizer
 // DLL injection) the sandboxed GPU child process fails with STATUS_DLL_NOT_FOUND
 // (0xC0000135) and Electron exits silently. Run GPU in the browser process; the
@@ -909,13 +916,17 @@ const dubOps = {
 let mcpServer: McpServer | null = null
 let bridge: BridgeInfo | null = null
 let tray: Tray | null = null
-const headless = process.argv.includes('--headless')
+let trayMenuTimer: NodeJS.Timeout | null = null
+// `--headless` is a Chromium switch, so new bridge launches use an app-specific
+// name. Keep accepting the old switch temporarily for already-generated bridges.
+const serviceMode = process.argv.includes('--gsv-service') || process.argv.includes('--headless') || process.env.GSV_SERVICE_MODE === '1'
+let guiOpened = !serviceMode
 
 function mcpUrl(): string {
   return `http://127.0.0.1:${config.mcp.port}/mcp`
 }
 
-/** In dev the exe is electron.exe, so the bridge also needs the app path to relaunch headless. */
+/** In dev the exe is electron.exe, so the bridge also needs the app path to relaunch the service. */
 function ensureBridgeInfo(): BridgeInfo {
   return ensureBridge(paths.dataRoot, app.getPath('exe'), paths.configFile, app.isPackaged ? undefined : app.getAppPath())
 }
@@ -1030,8 +1041,7 @@ function mcpStatus(): McpStatus {
 async function applyMcp(): Promise<void> {
   bridge = ensureBridgeInfo()
   if (!mcpServer) mcpServer = new McpServer(new McpTools(buildToolHost()), () => config.mcp.token, app.getVersion())
-  // Headless launch from the bridge always serves, even if the toggle is off.
-  if (config.mcp.enabled || headless) {
+  if (config.mcp.enabled) {
     if (!mcpServer.running || mcpServer.port !== config.mcp.port) await mcpServer.start(config.mcp.port)
   } else {
     await mcpServer.stop()
@@ -1066,6 +1076,8 @@ function registerMcpIpc(): void {
 }
 
 function showWindow(): void {
+  guiOpened = true
+  createTray()
   if (!mainWindow || mainWindow.isDestroyed()) {
     void createWindow()
     return
@@ -1152,19 +1164,33 @@ function buildTrayMenu(): Menu {
 }
 
 function refreshTray(): void {
-  if (!tray || tray.isDestroyed()) return
+  if (!tray || tray.isDestroyed() || (serviceMode && !guiOpened)) return
   const mcp = mcpServer?.running ? ` · MCP :${mcpServer.port}` : ''
   tray.setToolTip(`GPT-SoVITS-Studio${mcp}\n${engineLabel('TTS', ttsWorker)}  ${engineLabel('ASR', asrWorker)}\n${gpuLabel()}`)
-  tray.setContextMenu(buildTrayMenu())
+}
+
+function showTrayMenu(): void {
+  if (!tray || tray.isDestroyed() || (serviceMode && !guiOpened)) return
+  // Build only when the user asks for the menu. Replacing a native menu while
+  // Windows is displaying it makes right-click intermittently do nothing.
+  tray.popUpContextMenu(buildTrayMenu())
 }
 
 function createTray(): void {
-  if (tray) return
+  if (serviceMode && !guiOpened) return
+  if (tray && !tray.isDestroyed()) return
+  if (tray?.isDestroyed()) tray = null
   const iconPath = app.isPackaged ? path.join(process.resourcesPath, 'icon.ico') : path.join(paths.appRoot, 'resources', 'icon.ico')
-  tray = new Tray(fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty())
+  const image = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty()
+  tray = new Tray(image)
   tray.on('click', showWindow)
-  // Rebuild right before showing so states are current.
-  tray.on('right-click', () => refreshTray())
+  tray.on('double-click', showWindow)
+  tray.on('right-click', () => {
+    if (trayMenuTimer) clearTimeout(trayMenuTimer)
+    // Electron/Windows can open the taskbar menu on right-button-down. A short
+    // delay lets that native gesture finish before our menu is popped up.
+    trayMenuTimer = setTimeout(showTrayMenu, 100)
+  })
   refreshTray()
 }
 
@@ -1173,12 +1199,18 @@ async function boot(): Promise<void> {
   config = loadConfig()
   storage = new Storage(paths.dataRoot, paths.historyFile, paths.voicesFile, paths.voicesDir)
   if (config.outputDir && !fs.existsSync(config.outputDir)) fs.mkdirSync(config.outputDir, { recursive: true })
+  // Refresh the bridge before a legacy service launch can exit, so old clients
+  // immediately pick up the new auto-start policy and --gsv-service switch.
+  bridge = ensureBridgeInfo()
+  if (serviceMode && !guiOpened && (!config.mcp.enabled || !config.mcp.autoStart)) {
+    app.quit()
+    return
+  }
   registerIpc()
   await applyMcp()
-  createTray()
-  if (!headless) await createWindow()
+  if (!serviceMode) createTray()
+  if (!serviceMode) await createWindow()
   startGpuMonitor()
-  setInterval(refreshTray, 5000)
   startIdleMonitor()
 }
 
@@ -1187,8 +1219,9 @@ if (!gotLock) {
   app.quit()
 } else {
   app.on('second-instance', (_event, argv) => {
-    // A headless launch from the MCP bridge must not pop the window.
-    if (argv.includes('--headless')) return
+    // A service launch from the MCP bridge must not pop the window.
+    if (argv.includes('--gsv-service') || argv.includes('--headless')) return
+    guiOpened = true
     showWindow()
   })
 
@@ -1213,6 +1246,7 @@ if (!gotLock) {
     quitting = true
     if (gpuTimer) clearInterval(gpuTimer)
     if (idleTimer) clearInterval(idleTimer)
+    if (trayMenuTimer) clearTimeout(trayMenuTimer)
     try {
       cancelSeparation()
     } catch {

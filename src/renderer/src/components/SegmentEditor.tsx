@@ -26,36 +26,42 @@ const fmt = (s: number): string => `${Math.floor(s / 60)}:${(s % 60).toFixed(2).
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
 /** Plays a [start,end) window of a file through one shared <audio>. */
-function useRangePlayer(): { play: (url: string, start?: number, end?: number) => void; stop: () => void } {
+function useRangePlayer(): { play: (url: string, start?: number, end?: number) => void; stop: () => void; error: string } {
   const ref = useRef<HTMLAudioElement | null>(null)
   const stopAt = useRef<number | null>(null)
+  const [error, setError] = useState('')
   useEffect(() => {
     const a = new Audio()
     ref.current = a
     const tick = (): void => {
       if (stopAt.current !== null && a.currentTime >= stopAt.current) a.pause()
     }
+    const onError = (): void => setError(a.error?.message || '音频播放失败')
     a.addEventListener('timeupdate', tick)
+    a.addEventListener('error', onError)
     return () => {
-      a.pause()
       a.removeEventListener('timeupdate', tick)
+      a.removeEventListener('error', onError)
+      a.pause()
     }
   }, [])
   return {
     play: (url, start = 0, end) => {
       const a = ref.current
       if (!a) return
+      setError('')
       stopAt.current = end ?? null
       const go = (): void => {
         a.currentTime = start
-        void a.play()
+        void a.play().catch((playError) => setError(playError instanceof Error ? playError.message : String(playError)))
       }
       if (a.src !== url) {
         a.src = url
         a.addEventListener('loadedmetadata', go, { once: true })
       } else go()
     },
-    stop: () => ref.current?.pause()
+    stop: () => ref.current?.pause(),
+    error
   }
 }
 
@@ -258,6 +264,7 @@ export function SegmentEditor({ audioPath, onClose }: { audioPath: string; onClo
         </header>
 
         {error && <div className="seg-error">{error}</div>}
+        {player.error && <div className="seg-error">{player.error}</div>}
         {legacy && <div className="seg-error">这是旧版本生成的时间轴，没有保存音色信息，暂不支持重新生成；仍可导出字幕。</div>}
 
         {timing && (
