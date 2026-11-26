@@ -342,6 +342,25 @@ export interface Voice {
   duration: number
   createdAt: number
   originalName?: string
+  /** Folder path relative to data/voices, using forward slashes. Empty = root. */
+  folder: string
+  /** Last time the voice was selected/used, for the recent-voice menu. */
+  lastUsedAt?: number
+}
+
+export interface VoiceFolderInfo {
+  /** Folder path relative to data/voices, using forward slashes. Empty is the root and is not listed. */
+  path: string
+  name: string
+  parent: string
+  depth: number
+  /** Voices directly inside this folder. */
+  voiceCount: number
+}
+
+export interface VoiceLibrary {
+  voices: Voice[]
+  folders: VoiceFolderInfo[]
 }
 
 export interface VoiceImportResult {
@@ -482,17 +501,25 @@ export interface AppApi {
   }
   voices: {
     list: () => Promise<Voice[]>
+    library: () => Promise<VoiceLibrary>
     import: (payload: {
       sourcePath: string
       name: string
       transcript: string
       promptLang: string
+      folder?: string
     }) => Promise<Voice[]>
     update: (id: string, patch: Partial<Pick<Voice, 'name' | 'transcript' | 'promptLang'>>) => Promise<Voice[]>
     remove: (id: string) => Promise<Voice[]>
-    openFolder: () => Promise<void>
-    importFiles: () => Promise<VoiceImportResult | null>
+    openFolder: (folder?: string) => Promise<void>
+    importFiles: (folder?: string) => Promise<VoiceImportResult | null>
     export: (id: string) => Promise<string | null>
+    createFolder: (parent: string, name: string) => Promise<VoiceLibrary>
+    renameFolder: (folder: string, name: string) => Promise<VoiceLibrary>
+    removeFolder: (folder: string) => Promise<VoiceLibrary>
+    move: (id: string, folder: string) => Promise<VoiceLibrary>
+    touch: (id: string) => Promise<void>
+    audio: (id: string) => Promise<string>
   }
   window: {
     minimize: () => void

@@ -124,12 +124,19 @@ const api: AppApi = {
   },
   voices: {
     list: () => ipcRenderer.invoke('voices:list'),
+    library: () => ipcRenderer.invoke('voices:library'),
     import: (payload) => ipcRenderer.invoke('voices:import', payload),
     update: (id: string, patch) => ipcRenderer.invoke('voices:update', id, patch),
     remove: (id: string) => ipcRenderer.invoke('voices:remove', id),
-    openFolder: () => ipcRenderer.invoke('voices:open-folder'),
-    importFiles: () => ipcRenderer.invoke('voices:import-files'),
-    export: (id: string) => ipcRenderer.invoke('voices:export', id)
+    openFolder: (folder?: string) => ipcRenderer.invoke('voices:open-folder', folder),
+    importFiles: (folder?: string) => ipcRenderer.invoke('voices:import-files', folder),
+    export: (id: string) => ipcRenderer.invoke('voices:export', id),
+    createFolder: (parent: string, name: string) => ipcRenderer.invoke('voices:create-folder', parent, name),
+    renameFolder: (folder: string, name: string) => ipcRenderer.invoke('voices:rename-folder', folder, name),
+    removeFolder: (folder: string) => ipcRenderer.invoke('voices:remove-folder', folder),
+    move: (id: string, folder: string) => ipcRenderer.invoke('voices:move', id, folder),
+    touch: (id: string) => ipcRenderer.invoke('voices:touch', id),
+    audio: (id: string) => ipcRenderer.invoke('voices:audio', id)
   },
   window: {
     minimize: () => ipcRenderer.send('window:minimize'),

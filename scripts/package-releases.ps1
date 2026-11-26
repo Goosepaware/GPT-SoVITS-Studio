@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true)][string]$Source,
-  [string]$Version = "1.0.1",
+  [string]$Version = "1.1.0",
   [switch]$SkipSlim,
   [switch]$SkipFull,
   [switch]$UiOnly,

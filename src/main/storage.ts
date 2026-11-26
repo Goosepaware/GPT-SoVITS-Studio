@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type { HistoryEntry, Voice } from '@shared/types'
+import type { HistoryEntry, Voice, VoiceFolderInfo, VoiceLibrary } from '@shared/types'
 import { sidecarPaths } from './subtitles'
 
 interface StoredHistory extends Omit<HistoryEntry, 'filePath'> {
@@ -21,6 +21,11 @@ interface VoiceManifest {
   createdAt: number
   originalName?: string
   audioExt: string
+}
+
+interface VoiceUsage {
+  version: number
+  lastUsedAt: Record<string, number>
 }
 
 export interface VoiceImportResult {
@@ -68,6 +73,20 @@ function safeName(value: string, fallback = '音色'): string {
     .replace(/[. ]+$/g, '')
     .trim()
   return (cleaned || fallback).slice(0, 64)
+}
+
+function safeFolderName(value: string): string {
+  return safeName(value, '新建文件夹')
+}
+
+function normalizeFolder(value: unknown): string {
+  const raw = String(value || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  if (!raw) return ''
+  const parts = raw.split('/').filter(Boolean)
+  if (parts.some((part) => part === '.' || part === '..' || /[<>:"|?*\u0000-\u001f]/.test(part))) {
+    throw new Error(`非法文件夹路径：${raw}`)
+  }
+  return parts.join('/')
 }
 
 function normalizeLang(value: unknown): string {
@@ -129,8 +148,31 @@ function readVoicePackage(file: string): { manifest: VoiceManifest; audio: Buffe
   }
 }
 
+/** Read only the header + JSON metadata. Listing hundreds of voices must not load all audio. */
+function readVoiceMeta(file: string): VoiceManifest | null {
+  let fd: number | null = null
+  try {
+    fd = fs.openSync(file, 'r')
+    const header = Buffer.alloc(8)
+    if (fs.readSync(fd, header, 0, 8, 0) !== 8 || header.subarray(0, 4).toString('ascii') !== VOICE_MAGIC) return null
+    const metaLength = header.readUInt32LE(4)
+    if (metaLength <= 0 || metaLength > 4 * 1024 * 1024) return null
+    const meta = Buffer.alloc(metaLength)
+    if (fs.readSync(fd, meta, 0, metaLength, 8) !== metaLength) return null
+    const raw = JSON.parse(meta.toString('utf-8')) as Partial<VoiceManifest>
+    return normalizeManifest(raw, path.basename(file, path.extname(file)))
+  } catch {
+    return null
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd) } catch {}
+    }
+  }
+}
+
 export class Storage {
   private voiceCacheDir: string
+  private libraryFile: string
   private migrated = false
 
   constructor(
@@ -140,6 +182,7 @@ export class Storage {
     private voicesDir: string
   ) {
     this.voiceCacheDir = path.join(dataRoot, 'cache', 'voices')
+    this.libraryFile = path.join(dataRoot, 'voice-library.json')
   }
 
   listHistory(): HistoryEntry[] {
@@ -237,26 +280,110 @@ export class Storage {
 
   listVoices(): Voice[] {
     this.ensureMigrated()
+    const usage = this.readUsage().lastUsedAt
     const voices: Voice[] = []
     for (const file of this.packageFiles()) {
-      const parsed = readVoicePackage(file)
-      if (!parsed || parsed.audio.length === 0) continue
+      const manifest = readVoiceMeta(file)
+      if (!manifest) continue
       const id = path.basename(file, path.extname(file))
-      const audioPath = this.ensureCachedAudio(id, file, parsed)
-      if (!audioPath) continue
       voices.push({
         id,
-        name: parsed.manifest.name,
-        audioPath,
+        name: manifest.name,
+        audioPath: this.cachedAudioPath(id, manifest.audioExt),
         packagePath: file,
-        transcript: parsed.manifest.transcript,
-        promptLang: parsed.manifest.promptLang,
-        duration: parsed.manifest.duration,
-        createdAt: parsed.manifest.createdAt,
-        originalName: parsed.manifest.originalName
+        transcript: manifest.transcript,
+        promptLang: manifest.promptLang,
+        duration: manifest.duration,
+        createdAt: manifest.createdAt,
+        originalName: manifest.originalName,
+        folder: this.folderOf(file),
+        lastUsedAt: usage[id]
       })
     }
     return voices.sort((a, b) => b.createdAt - a.createdAt)
+  }
+
+  library(): VoiceLibrary {
+    const voices = this.listVoices()
+    const counts = new Map<string, number>()
+    for (const voice of voices) counts.set(voice.folder, (counts.get(voice.folder) || 0) + 1)
+    const folders: VoiceFolderInfo[] = this.folderPaths().map((folder) => ({
+      path: folder,
+      name: folder.slice(folder.lastIndexOf('/') + 1),
+      parent: folder.includes('/') ? folder.slice(0, folder.lastIndexOf('/')) : '',
+      depth: folder.split('/').length - 1,
+      voiceCount: counts.get(folder) || 0
+    }))
+    return { voices, folders }
+  }
+
+  touchVoice(id: string): void {
+    if (!this.fileForId(id)) return
+    const usage = this.readUsage()
+    usage.lastUsedAt[id] = Date.now()
+    this.writeUsage(usage)
+  }
+
+  voiceAudio(id: string): string {
+    const file = this.fileForId(id)
+    if (!file) throw new Error('音色不存在，可能已经被删除')
+    const parsed = readVoicePackage(file)
+    if (!parsed || parsed.audio.length === 0) throw new Error('音色包损坏，无法读取参考音频')
+    const audio = this.ensureCachedAudio(id, file, parsed)
+    if (!audio) throw new Error('无法解包音色参考音频')
+    return audio
+  }
+
+  folderAbsolutePath(folder: string): string {
+    return this.folderAbsolute(folder)
+  }
+
+  createFolder(parent: string, name: string): VoiceLibrary {
+    const parentPath = this.folderAbsolute(normalizeFolder(parent))
+    const folderName = safeFolderName(name)
+    const target = path.join(parentPath, folderName)
+    this.assertFolderInside(target)
+    if (fs.existsSync(target)) throw new Error('同一位置已存在同名文件夹')
+    fs.mkdirSync(target)
+    return this.library()
+  }
+
+  renameFolder(folder: string, name: string): VoiceLibrary {
+    const current = normalizeFolder(folder)
+    if (!current) throw new Error('不能重命名根目录')
+    const source = this.folderAbsolute(current)
+    this.assertFolderInside(source)
+    if (!fs.existsSync(source) || !fs.statSync(source).isDirectory()) throw new Error('文件夹不存在')
+    const target = path.join(path.dirname(source), safeFolderName(name))
+    this.assertFolderInside(target)
+    if (path.resolve(target) === path.resolve(source)) return this.library()
+    if (fs.existsSync(target)) throw new Error('同一位置已存在同名文件夹')
+    fs.renameSync(source, target)
+    return this.library()
+  }
+
+  removeFolder(folder: string): VoiceLibrary {
+    const current = normalizeFolder(folder)
+    if (!current) throw new Error('不能删除根目录')
+    const target = this.folderAbsolute(current)
+    this.assertFolderInside(target)
+    if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) throw new Error('文件夹不存在')
+    if (fs.readdirSync(target).length > 0) throw new Error('文件夹不为空，请先移动或删除其中的音色和子文件夹')
+    fs.rmdirSync(target)
+    return this.library()
+  }
+
+  moveVoice(id: string, folder: string): VoiceLibrary {
+    const file = this.fileForId(id)
+    if (!file) throw new Error('音色不存在，可能已经被删除')
+    const targetDir = this.folderAbsolute(normalizeFolder(folder))
+    this.assertFolderInside(targetDir)
+    if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) throw new Error('目标文件夹不存在')
+    const target = path.join(targetDir, path.basename(file))
+    if (path.resolve(target) === path.resolve(file)) return this.library()
+    if (fs.existsSync(target)) throw new Error('目标文件夹已有同名音色')
+    fs.renameSync(file, target)
+    return this.library()
   }
 
   importVoice(payload: {
@@ -266,12 +393,13 @@ export class Storage {
     promptLang: string
     duration: number
     originalName?: string
+    folder?: string
   }): Voice[] {
     this.ensureMigrated()
     const audio = fs.readFileSync(payload.sourcePath)
     const name = payload.name.trim() || '未命名音色'
     const existing = this.findByName(name)
-    const file = existing ? existing.file : this.uniqueFilePath(name, null)
+    const file = existing ? existing.file : this.uniqueFilePath(name, null, normalizeFolder(payload.folder))
     const manifest: VoiceManifest = {
       format: VOICE_FORMAT,
       version: VOICE_VERSION,
@@ -313,6 +441,15 @@ export class Storage {
       }
     }
     this.clearCachedAudio(id)
+    const newId = path.basename(target, path.extname(target))
+    if (newId !== id) {
+      const usage = this.readUsage()
+      if (usage.lastUsedAt[id]) {
+        usage.lastUsedAt[newId] = usage.lastUsedAt[id]
+        delete usage.lastUsedAt[id]
+        this.writeUsage(usage)
+      }
+    }
     return this.listVoices()
   }
 
@@ -326,6 +463,11 @@ export class Storage {
       }
     }
     this.clearCachedAudio(id)
+    const usage = this.readUsage()
+    if (usage.lastUsedAt[id]) {
+      delete usage.lastUsedAt[id]
+      this.writeUsage(usage)
+    }
     return this.listVoices()
   }
 
@@ -339,10 +481,11 @@ export class Storage {
     return target
   }
 
-  importVoiceFiles(files: string[]): VoiceImportResult {
+  importVoiceFiles(files: string[], folder = ''): VoiceImportResult {
     this.ensureMigrated()
     let imported = 0
     let skipped = 0
+    const targetFolder = normalizeFolder(folder)
     for (const file of files) {
       if (path.extname(file).toLowerCase() !== VOICE_EXT || this.isInsideVoices(file)) {
         skipped += 1
@@ -354,7 +497,7 @@ export class Storage {
         continue
       }
       try {
-        const target = this.uniqueFilePath(parsed.manifest.name, null)
+        const target = this.uniqueFilePath(parsed.manifest.name, null, targetFolder)
         writeVoicePackage(target, parsed.manifest, parsed.audio)
         imported += 1
       } catch {
@@ -397,7 +540,7 @@ export class Storage {
         }
         const folder = path.dirname(audioPath)
         if (path.resolve(folder) !== path.resolve(this.voicesDir) && this.isInsideVoices(folder)) {
-          fs.rmSync(folder, { recursive: true, force: true })
+          try { fs.rmdirSync(folder) } catch {}
         }
       } catch {
         allOk = false
@@ -418,41 +561,99 @@ export class Storage {
   }
 
   private packageFiles(): string[] {
-    try {
-      return fs
-        .readdirSync(this.voicesDir, { withFileTypes: true })
-        .filter((entry) => entry.isFile() && path.extname(entry.name).toLowerCase() === VOICE_EXT)
-        .map((entry) => path.join(this.voicesDir, entry.name))
-    } catch {
-      return []
+    const files: string[] = []
+    const walk = (dir: string): void => {
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
+        for (const entry of entries) {
+          if (entry.isSymbolicLink()) continue
+          const full = path.join(dir, entry.name)
+          if (entry.isDirectory()) walk(full)
+          else if (entry.isFile() && path.extname(entry.name).toLowerCase() === VOICE_EXT) files.push(full)
+        }
+      } catch {
+        // ignore unreadable folders
+      }
     }
+    walk(this.voicesDir)
+    return files
+  }
+
+  private folderPaths(): string[] {
+    const folders: string[] = []
+    const walk = (dir: string, prefix: string): void => {
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+        for (const entry of entries) {
+          if (!entry.isDirectory() || entry.isSymbolicLink()) continue
+          const rel = prefix ? `${prefix}/${entry.name}` : entry.name
+          folders.push(rel)
+          walk(path.join(dir, entry.name), rel)
+        }
+      } catch {
+        // ignore
+      }
+    }
+    walk(this.voicesDir, '')
+    return folders
+  }
+
+  private folderOf(file: string): string {
+    const rel = path.relative(this.voicesDir, path.dirname(file))
+    return rel && !rel.startsWith('..') ? rel.split(path.sep).join('/') : ''
+  }
+
+  private folderAbsolute(folder: string): string {
+    const normalized = normalizeFolder(folder)
+    const target = normalized ? path.join(this.voicesDir, ...normalized.split('/')) : this.voicesDir
+    this.assertFolderInside(target)
+    return target
+  }
+
+  private assertFolderInside(target: string): void {
+    if (!this.isInsideVoices(target)) throw new Error('文件夹路径超出音色库范围')
   }
 
   private findByName(name: string): { file: string; manifest: VoiceManifest } | null {
     const target = name.trim()
     for (const file of this.packageFiles()) {
-      const parsed = readVoicePackage(file)
-      if (parsed && parsed.manifest.name === target) return { file, manifest: parsed.manifest }
+      const manifest = readVoiceMeta(file)
+      if (manifest && manifest.name === target) return { file, manifest }
     }
     return null
   }
 
-  private uniqueFilePath(name: string, currentFile: string | null): string {
+  private uniqueFilePath(name: string, currentFile: string | null, folder = ''): string {
     const base = safeName(name)
-    const current = currentFile ? path.resolve(currentFile) : ''
-    let candidate = path.join(this.voicesDir, `${base}${VOICE_EXT}`)
+    const dir = currentFile ? path.dirname(currentFile) : this.folderAbsolute(folder)
+    const currentBase = currentFile ? path.basename(currentFile).toLowerCase() : ''
+    const taken = new Set(this.packageFiles().map((file) => path.basename(file).toLowerCase()))
+    let candidate = path.join(dir, `${base}${VOICE_EXT}`)
     let index = 1
-    while (fs.existsSync(candidate) && path.resolve(candidate) !== current) {
-      candidate = path.join(this.voicesDir, `${base}（${index++}）${VOICE_EXT}`)
+    while (taken.has(path.basename(candidate).toLowerCase()) && path.basename(candidate).toLowerCase() !== currentBase) {
+      candidate = path.join(dir, `${base}（${index++}）${VOICE_EXT}`)
     }
     return candidate
   }
 
   private fileForId(id: string): string | null {
-    const candidate = path.join(this.voicesDir, `${id}${VOICE_EXT}`)
-    if (fs.existsSync(candidate)) return candidate
-    const match = this.packageFiles().find((file) => path.basename(file, path.extname(file)) === id)
-    return match || null
+    return this.packageFiles().find((file) => path.basename(file, path.extname(file)) === id) || null
+  }
+
+  private cachedAudioPath(id: string, ext: string): string {
+    return path.join(this.voiceCacheDir, `${id}${ext}`)
+  }
+
+  private readUsage(): VoiceUsage {
+    const raw = readJson<Partial<VoiceUsage>>(this.libraryFile, {})
+    return {
+      version: 1,
+      lastUsedAt: raw.lastUsedAt && typeof raw.lastUsedAt === 'object' ? raw.lastUsedAt : {}
+    }
+  }
+
+  private writeUsage(usage: VoiceUsage): void {
+    writeJson(this.libraryFile, { version: 1, lastUsedAt: usage.lastUsedAt })
   }
 
   private isInsideVoices(target: string): boolean {
@@ -465,7 +666,7 @@ export class Storage {
     packageFile: string,
     parsed: { manifest: VoiceManifest; audio: Buffer }
   ): string {
-    const target = path.join(this.voiceCacheDir, `${id}${parsed.manifest.audioExt}`)
+    const target = this.cachedAudioPath(id, parsed.manifest.audioExt)
     let fresh = false
     try {
       const pkgStat = fs.statSync(packageFile)

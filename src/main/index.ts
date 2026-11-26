@@ -597,41 +597,62 @@ function registerIpc(): void {
   ipcMain.handle('segments:revert', (_e, audioPath: string, mode: 'original' | 'last') => segmentOps.revert(audioPath, mode))
 
   ipcMain.handle('voices:list', () => storage.listVoices())
-  ipcMain.handle('voices:import', async (_event, payload: { sourcePath: string; name: string; transcript: string; promptLang: string }) => {
+  ipcMain.handle('voices:library', () => storage.library())
+  ipcMain.handle('voices:import', async (_event, payload: { sourcePath: string; name: string; transcript: string; promptLang: string; folder?: string }) => {
     const duration = await getDuration(config.engineRoot, payload.sourcePath)
-    return storage.importVoice({
+    const voices = storage.importVoice({
       ...payload,
       duration,
       originalName: path.basename(payload.sourcePath)
     })
+    send('voices:changed', null)
+    return voices
   })
-  ipcMain.handle('voices:update', (_event, id: string, patch: Partial<Pick<Voice, 'name' | 'transcript' | 'promptLang' | 'duration'>>) =>
-    storage.updateVoice(id, patch)
-  )
-  ipcMain.handle('voices:remove', (_event, id: string) => storage.removeVoice(id))
-  ipcMain.handle('voices:open-folder', async () => {
-    fs.mkdirSync(paths.voicesDir, { recursive: true })
-    await shell.openPath(paths.voicesDir)
+  ipcMain.handle('voices:update', (_event, id: string, patch: Partial<Pick<Voice, 'name' | 'transcript' | 'promptLang' | 'duration'>>) => {
+    const voices = storage.updateVoice(id, patch)
+    send('voices:changed', null)
+    return voices
   })
-  ipcMain.handle('voices:import-files', async () => {
+  ipcMain.handle('voices:remove', (_event, id: string) => {
+    const voices = storage.removeVoice(id)
+    send('voices:changed', null)
+    return voices
+  })
+  ipcMain.handle('voices:open-folder', async (_event, folder?: string) => {
+    const target = storage.folderAbsolutePath(folder || '')
+    fs.mkdirSync(target, { recursive: true })
+    await shell.openPath(target)
+  })
+  ipcMain.handle('voices:import-files', async (_event, folder?: string) => {
     const result = await dialog.showOpenDialog(mainWindow!, {
       title: '选择 .v5t 音色文件',
       properties: ['openFile', 'multiSelections'],
       filters: [{ name: 'GPT-SoVITS 音色包', extensions: ['v5t'] }]
     })
     if (result.canceled || !result.filePaths.length) return null
-    const imported = storage.importVoiceFiles(result.filePaths)
+    const imported = storage.importVoiceFiles(result.filePaths, folder || '')
     for (const voice of imported.voices) {
       if (voice.duration > 0) continue
       try {
-        const duration = await getDuration(config.engineRoot, voice.audioPath)
+        const duration = await getDuration(config.engineRoot, await storage.voiceAudio(voice.id))
         if (duration > 0) storage.updateVoice(voice.id, { duration })
       } catch {
         // Duration is optional for imported packages.
       }
     }
+    send('voices:changed', null)
     return { ...imported, voices: storage.listVoices() }
   })
+  const voicesChanged = <T,>(result: T): T => {
+    send('voices:changed', null)
+    return result
+  }
+  ipcMain.handle('voices:create-folder', (_event, parent: string, name: string) => voicesChanged(storage.createFolder(parent, name)))
+  ipcMain.handle('voices:rename-folder', (_event, folder: string, name: string) => voicesChanged(storage.renameFolder(folder, name)))
+  ipcMain.handle('voices:remove-folder', (_event, folder: string) => voicesChanged(storage.removeFolder(folder)))
+  ipcMain.handle('voices:move', (_event, id: string, folder: string) => voicesChanged(storage.moveVoice(id, folder)))
+  ipcMain.handle('voices:touch', (_event, id: string) => storage.touchVoice(id))
+  ipcMain.handle('voices:audio', (_event, id: string) => storage.voiceAudio(id))
   ipcMain.handle('voices:export', async (_event, id: string) => {
     const voice = storage.listVoices().find((item) => item.id === id)
     if (!voice) throw new Error('音色不存在，可能已经被删除')
@@ -883,10 +904,10 @@ const dubOps = {
       return { ...r, audioPath: wav, sourcePath: src }
     }),
   /** Cut a speaker's reference line and save it as a voice. */
-  voiceFromSpan: async (src: string, start: number, end: number, name: string, transcript?: string, lang?: string) => {
+  voiceFromSpan: async (src: string, start: number, end: number, name: string, transcript?: string, lang?: string, folder?: string) => {
     const clip = path.join(paths.tempDir, 'spk', `${Date.now()}.wav`)
     await cutClip(config.engineRoot, src, start, end, clip)
-    return buildToolHost().createVoice({ sourcePath: clip, name, transcript, lang })
+    return buildToolHost().createVoice({ sourcePath: clip, name, transcript, lang, folder })
   },
   mix: (base: string, items: MixItem[], outputPath: string, bgm?: 'keep' | 'duck' | 'remove' | 'replace', bedPath?: string) =>
     mixDub(config.engineRoot, base, items, outputPath, bgm, bedPath),
@@ -956,7 +977,9 @@ function buildToolHost(): ToolHost {
     }),
     models: () => scanModels(config.engineRoot),
     voices: () => storage.listVoices(),
-    createVoice: async ({ sourcePath, name, transcript, lang }) => {
+    voiceAudio: (id) => storage.voiceAudio(id),
+    touchVoice: (id) => storage.touchVoice(id),
+    createVoice: async ({ sourcePath, name, transcript, lang, folder }) => {
       if (!fs.existsSync(sourcePath)) throw new Error(`文件不存在：${sourcePath}`)
       const prepared = await prepareReference(config.engineRoot, sourcePath, paths.tempDir)
       let text = transcript
@@ -977,7 +1000,8 @@ function buildToolHost(): ToolHost {
         transcript: text,
         promptLang: language,
         duration: prepared.duration,
-        originalName: path.basename(sourcePath)
+        originalName: path.basename(sourcePath),
+        folder
       })
       send('voices:changed', null)
       const v = list.find((x) => x.name === name.trim())

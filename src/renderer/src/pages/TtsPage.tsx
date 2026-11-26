@@ -23,7 +23,7 @@ import {
   Wand2,
   X
 } from 'lucide-react'
-import { SUBTITLE_FORMATS, type Bootstrap, type EngineStatus, type HistoryEntry, type ReferenceTransfer, type SubtitleFormat, type TtsResult, type Voice, type WorkerEvent } from '@shared/types'
+import { SUBTITLE_FORMATS, type Bootstrap, type EngineStatus, type HistoryEntry, type ReferenceTransfer, type SubtitleFormat, type TtsResult, type Voice, type VoiceFolderInfo, type WorkerEvent } from '@shared/types'
 import { FORMAT_LABEL } from '../components/SettingsExtraCards'
 import { AudioPlayer } from '../components/AudioPlayer'
 import { DropZone } from '../components/DropZone'
@@ -31,6 +31,7 @@ import { HistoryRow } from '../components/HistoryRow'
 import { Modal } from '../components/Modal'
 import { ProgressTimeline, type StageItem } from '../components/ProgressTimeline'
 import { Select } from '../components/Select'
+import { VoicePicker } from '../components/VoicePicker'
 import { basename, cn, formatBytes, formatClock } from '../lib/format'
 import { scrollWithinContent } from '../lib/scroll'
 import { useAudioUrl } from '../lib/useAudioUrl'
@@ -41,6 +42,8 @@ interface Props {
   onBootstrap: (next: Bootstrap) => void
   notify: (message: string, tone?: 'info' | 'success' | 'warning' | 'error') => void
   incomingReference?: ReferenceTransfer | null
+  voiceTransfer?: { id: string; at: number } | null
+  onManageVoices?: () => void
 }
 
 type JobKind = 'load' | 'synth'
@@ -143,7 +146,7 @@ function finishStages(job: Job, state: 'done' | 'error'): Job {
   }
 }
 
-export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingReference }: Props): JSX.Element {
+export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingReference, voiceTransfer, onManageVoices }: Props): JSX.Element {
   const [gptId, setGptId] = useState('')
   const [sovitsId, setSovitsId] = useState('')
   const [ref, setRef] = useState<{ path: string; duration: number; name: string } | null>(null)
@@ -168,23 +171,29 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
   const [synthError, setSynthError] = useState<string | null>(null)
   const [asrInline, setAsrInline] = useState<{ running: boolean; label: string; startedAt?: number }>({ running: false, label: '' })
   const [voices, setVoices] = useState<Voice[]>([])
+  const [folders, setFolders] = useState<VoiceFolderInfo[]>([])
   const [voiceId, setVoiceId] = useState('')
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [subtitleFormat, setSubtitleFormat] = useState<SubtitleFormat>(bootstrap.config.subtitle.defaultFormat)
   const [batchFormats, setBatchFormats] = useState<SubtitleFormat[]>([bootstrap.config.subtitle.defaultFormat])
   useEffect(() => setSubtitleFormat(bootstrap.config.subtitle.defaultFormat), [bootstrap.config.subtitle.defaultFormat])
   // Agent (MCP) generations land in history while this page is open.
-  useEffect(() => window.api.onDataChanged((kind) => kind === 'history' && void window.api.history.list().then(setHistory)), [])
+  useEffect(() => window.api.onDataChanged((kind) => {
+    if (kind === 'history') void window.api.history.list().then(setHistory)
+    else void window.api.voices.library().then((next) => { setVoices(next.voices); setFolders(next.folders) })
+  }), [])
   const [historySelectMode, setHistorySelectMode] = useState(false)
   const [selectedHistory, setSelectedHistory] = useState<Set<string>>(new Set())
   const [confirmDelete, setConfirmDelete] = useState<{ ids: string[]; title: string; message: string } | null>(null)
   const [saveOpen, setSaveOpen] = useState(false)
   const [voiceName, setVoiceName] = useState('')
+  const [saveFolder, setSaveFolder] = useState('')
   const targetRef = useRef<HTMLTextAreaElement | null>(null)
   const progressAnchor = useRef<HTMLDivElement | null>(null)
   const resultAnchor = useRef<HTMLDivElement | null>(null)
   const advancedAnchor = useRef<HTMLDivElement | null>(null)
   const lastTransferId = useRef(0)
+  const lastVoiceTransfer = useRef(0)
 
   const gpt = bootstrap.models.tts.gpt.find((item) => item.id === gptId) || bootstrap.models.tts.gpt[0]
   const sovits = bootstrap.models.tts.sovits.find((item) => item.id === sovitsId) || bootstrap.models.tts.sovits[0]
@@ -200,7 +209,7 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
   }, [bootstrap.models, gptId, sovitsId])
 
   useEffect(() => {
-    void window.api.voices.list().then(setVoices)
+    void window.api.voices.library().then((next) => { setVoices(next.voices); setFolders(next.folders) })
     void window.api.history.list().then(setHistory)
   }, [])
 
@@ -299,11 +308,45 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
     setVoiceId(id)
     const voice = voices.find((item) => item.id === id)
     if (!voice) return
-    setRef({ path: voice.audioPath, duration: voice.duration, name: voice.name })
-    setRefText(voice.transcript)
-    setRefLang(voice.promptLang)
-    setResult(null)
+    try {
+      const audioPath = await window.api.voices.audio(voice.id)
+      await window.api.voices.touch(voice.id)
+      setRef({ path: audioPath, duration: voice.duration, name: voice.name })
+      setRefText(voice.transcript)
+      setRefLang(voice.promptLang)
+      setVoices((current) => current.map((item) => item.id === voice.id ? { ...item, lastUsedAt: Date.now(), audioPath } : item))
+      setResult(null)
+    } catch (error) {
+      notify(error instanceof Error ? error.message : String(error), 'error')
+    }
   }
+
+  useEffect(() => {
+    if (!voiceTransfer || voiceTransfer.at === lastVoiceTransfer.current) return
+    lastVoiceTransfer.current = voiceTransfer.at
+    const load = async (): Promise<void> => {
+      const next = await window.api.voices.library()
+      setVoices(next.voices)
+      setFolders(next.folders)
+      const voice = next.voices.find((item) => item.id === voiceTransfer.id)
+      if (!voice) {
+        notify('音色不存在，可能已被删除', 'warning')
+        return
+      }
+      try {
+        const audioPath = await window.api.voices.audio(voice.id)
+        await window.api.voices.touch(voice.id)
+        setVoiceId(voice.id)
+        setRef({ path: audioPath, duration: voice.duration, name: voice.name })
+        setRefText(voice.transcript)
+        setRefLang(voice.promptLang)
+        setResult(null)
+      } catch (error) {
+        notify(error instanceof Error ? error.message : String(error), 'error')
+      }
+    }
+    void load()
+  }, [voiceTransfer])
 
   async function ensureTtsLoaded(): Promise<void> {
     if (!gpt || !sovits) throw new Error('没有可用的 GPT / SoVITS 模型，请检查整合包')
@@ -445,7 +488,8 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
         sourcePath: ref.path,
         name: voiceName || ref.name,
         transcript: refText,
-        promptLang: refLang
+        promptLang: refLang,
+        folder: saveFolder
       })
       setVoices(next)
       setSaveOpen(false)
@@ -461,7 +505,9 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
     try {
       const result = await window.api.voices.importFiles()
       if (!result) return
-      setVoices(result.voices)
+      const next = await window.api.voices.library()
+      setVoices(next.voices)
+      setFolders(next.folders)
       if (result.imported === 0) {
         notify('没有找到可导入的音色包，请选择 .v5t 文件', 'warning')
         return
@@ -709,10 +755,7 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
               </Select>
             </Field>
             <Field label="音色库">
-              <Select value={voiceId} onChange={(id) => void selectVoice(id)} className="voice-select">
-                <option value="">临时参考音频</option>
-                {voices.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}
-              </Select>
+              <VoicePicker voices={voices} folders={folders} value={voiceId} onChange={(id) => void selectVoice(id)} onManage={onManageVoices} className="voice-select" />
             </Field>
           </div>
 
@@ -750,7 +793,7 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
           </Field>
 
           <div className="ref-foot">
-            <button className="btn ghost small" onClick={() => { setVoiceName(selectedVoice?.name || ref?.name || '我的音色'); setSaveOpen(true) }} disabled={!ref || !refText.trim()}>
+            <button className="btn ghost small" onClick={() => { setVoiceName(selectedVoice?.name || ref?.name || '我的音色'); setSaveFolder(selectedVoice?.folder || ''); setSaveOpen(true) }} disabled={!ref || !refText.trim()}>
               <Save size={14} /> 保存到音色库
             </button>
             {selectedVoice && (
@@ -1061,6 +1104,12 @@ export function TtsPage({ bootstrap, engines, onBootstrap, notify, incomingRefer
       >
         <Field label="音色名称">
           <input value={voiceName} onChange={(event) => setVoiceName(event.target.value)} placeholder="例如：旁白 · 温柔女声" autoFocus />
+        </Field>
+        <Field label="保存到文件夹">
+          <Select value={saveFolder} onChange={setSaveFolder}>
+            <option value="">根目录（未分类）</option>
+            {folders.map((folder) => <option key={folder.path} value={folder.path}>{'　'.repeat(folder.depth + 1)}{folder.name}</option>)}
+          </Select>
         </Field>
         <div className="modal-note">参考文本：{refText.slice(0, 80) || '（空）'}</div>
       </Modal>

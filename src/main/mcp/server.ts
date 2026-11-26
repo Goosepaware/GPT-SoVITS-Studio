@@ -20,7 +20,7 @@ const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05']
 const INSTRUCTIONS = [
   'Local GPT-SoVITS v5turbo TTS studio (runs on this PC, GPU queue shared with the app).',
   'Voices: list_voices -> synthesize (one text) or synthesize_script (many lines, manifest.json).',
-  'New voices: create_voice from a clean 3-10 s clip, or voice_from_span from a diarize reference.',
+  'New voices: create_voice from a clean 3-10 s clip, or voice_from_span from a diarize reference. Both accept folder (nested paths allowed); list_voices returns folder.',
   'Long tools (synthesize*, transcribe, diarize, create_voice, separate_audio, mix_dub, burn_subtitles, preview_segments) return a jobId if not done within `wait` s; then call job_status {jobId, wait}. Progress notifications are sent when a progressToken is given.',
   'VRAM: models stay loaded between calls for speed. Do not unload during a multi-step task; call unload_models once the whole task is done (or when the user asks).',
   'Fix single bad sentences: list_segments -> preview_segments -> commit_segment (revert_edits to undo).',

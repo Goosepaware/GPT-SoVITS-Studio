@@ -27,7 +27,9 @@ export interface ToolHost {
   status: () => Json
   models: () => ModelCatalog
   voices: () => Voice[]
-  createVoice: (p: { sourcePath: string; name: string; transcript?: string; lang?: string }) => Promise<Voice>
+  voiceAudio: (id: string) => string
+  touchVoice?: (id: string) => void
+  createVoice: (p: { sourcePath: string; name: string; transcript?: string; lang?: string; folder?: string }) => Promise<Voice>
   removeVoice: (id: string) => void
   history: () => HistoryEntry[]
   /** Downloadable model packs (TTS core, G2PW, SenseVoice, ...). */
@@ -44,7 +46,7 @@ export interface ToolHost {
   dub?: {
     extractAudio: (src: string, start?: number, end?: number) => Promise<string>
     diarize: (src: string, opts: { numSpeakers?: number; language?: string; transcribe?: boolean; threshold?: number }) => Promise<unknown>
-    voiceFromSpan: (src: string, start: number, end: number, name: string, transcript?: string, lang?: string) => Promise<Voice>
+    voiceFromSpan: (src: string, start: number, end: number, name: string, transcript?: string, lang?: string, folder?: string) => Promise<Voice>
     mix: (
       base: string,
       items: { audioPath: string; start: number; gain?: number }[],
@@ -378,12 +380,13 @@ export class McpTools {
     return v
   }
 
-  private buildSynth(a: Json, fallbackVoice?: string): Json {
+  private async buildSynth(a: Json, fallbackVoice?: string): Promise<Json> {
     const text = str(a.text)
     if (!text) throw new Error('text is required')
     const voiceKey = str(a.voice) || fallbackVoice
     const voice = voiceKey ? this.findVoice(voiceKey) : undefined
-    const ref = str(a.refAudioPath) ? this.checkPath(String(a.refAudioPath)) : voice?.audioPath
+    if (voice) this.host.touchVoice?.(voice.id)
+    const ref = str(a.refAudioPath) ? this.checkPath(String(a.refAudioPath)) : voice ? this.host.voiceAudio(voice.id) : undefined
     const promptText = str(a.promptText) || voice?.transcript
     if (!ref || !promptText) throw new Error('Provide voice (name or id), or both refAudioPath and promptText')
     const params = (a.params && typeof a.params === 'object' ? a.params : {}) as Json
@@ -405,7 +408,7 @@ export class McpTools {
   }
 
   private async synthOne(a: Json, extra: { outputDir?: string; fileName?: string; voice?: string; formats?: SubtitleFormat[] } = {}): Promise<Json> {
-    const options = this.buildSynth(a, extra.voice)
+    const options = await this.buildSynth(a, extra.voice)
     const dir = str(a.outputDir) || extra.outputDir
     const out = dir ? uniquePath(this.checkWrite(dir), sanitize(str(a.fileName) || extra.fileName || String(options.text))) : undefined
     const r = await this.host.synthesize(options, out)
@@ -428,7 +431,7 @@ export class McpTools {
 
   private buildDefs(): ToolDef[] {
     const h = this.host
-    const voiceView = (v: Voice): Json => ({ id: v.id, name: v.name, transcript: v.transcript, lang: v.promptLang, duration: v.duration, package: v.packagePath })
+    const voiceView = (v: Voice): Json => ({ id: v.id, name: v.name, folder: v.folder || null, transcript: v.transcript, lang: v.promptLang, duration: v.duration, package: v.packagePath, lastUsedAt: v.lastUsedAt || null })
     return [
       {
         name: 'studio_status',
@@ -453,11 +456,22 @@ export class McpTools {
       },
       {
         name: 'list_voices',
-        description: 'List saved voices (.v5t = reference audio + transcript + language). Use name or id as `voice` in synthesize.',
-        inputSchema: { type: 'object', properties: { query: { type: 'string', description: 'Optional name filter' } } },
+        description: 'List saved voices (.v5t = reference audio + transcript + language), including their folder path. Use name or id as `voice` in synthesize.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Optional name filter' },
+            folder: { type: 'string', description: 'Optional folder path; folders include descendants' }
+          }
+        },
         run: async (a) => {
           const q = str(a.query)?.toLowerCase()
-          return h.voices().filter((v) => !q || v.name.toLowerCase().includes(q)).map(voiceView)
+          const folder = str(a.folder)?.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+          return h
+            .voices()
+            .filter((v) => !q || v.name.toLowerCase().includes(q))
+            .filter((v) => !folder || v.folder === folder || v.folder.startsWith(`${folder}/`))
+            .map(voiceView)
         }
       },
       {
@@ -472,13 +486,14 @@ export class McpTools {
             audioPath: { type: 'string' },
             name: { type: 'string', description: 'Voice name (also the .v5t file name)' },
             transcript: { type: 'string', description: 'Exact text spoken in the clip. Recommended when known (e.g. game subtitle tables).' },
-            lang: { type: 'string', description: 'zh / en / ja / ko / yue / auto' }
+            lang: { type: 'string', description: 'zh / en / ja / ko / yue / auto' },
+            folder: { type: 'string', description: 'Target folder path, e.g. "游戏/赛马娘". Empty = root.' }
           }
         },
         run: async (a) => {
           const name = str(a.name)
           if (!name) throw new Error('name is required')
-          const v = await h.createVoice({ sourcePath: this.checkPath(String(a.audioPath || '')), name, transcript: str(a.transcript), lang: str(a.lang) })
+          const v = await h.createVoice({ sourcePath: this.checkPath(String(a.audioPath || '')), name, transcript: str(a.transcript), lang: str(a.lang), folder: str(a.folder) })
           return voiceView(v)
         }
       },
@@ -692,7 +707,7 @@ export class McpTools {
       },
       {
         name: 'voice_from_span',
-        description: 'Create a voice from a time span of a video/audio (e.g. a diarize reference candidate). transcript = what is said in the span.',
+        description: 'Create a voice from a time span of a video/audio (e.g. a diarize reference candidate). transcript = what is said in the span. Optional folder path.',
         inputSchema: {
           type: 'object',
           required: ['sourcePath', 'start', 'end', 'name'],
@@ -703,6 +718,7 @@ export class McpTools {
             name: { type: 'string' },
             transcript: { type: 'string' },
             lang: { type: 'string' },
+            folder: { type: 'string', description: 'Target folder path, e.g. "游戏/赛马娘". Empty = root.' },
             useVocals: { type: 'boolean', description: 'Cut from separated vocals (cleaner reference). Same timeline as the source.' }
           }
         },
@@ -710,7 +726,7 @@ export class McpTools {
           if (!h.dub) throw new Error('Dubbing unavailable')
           let src = this.checkPath(String(a.sourcePath || ''))
           if (a.useVocals === true) src = (await h.dub.separate(src)).vocals
-          const v = await h.dub.voiceFromSpan(src, Number(a.start), Number(a.end), String(a.name || ''), str(a.transcript), str(a.lang))
+          const v = await h.dub.voiceFromSpan(src, Number(a.start), Number(a.end), String(a.name || ''), str(a.transcript), str(a.lang), str(a.folder))
           return voiceView(v)
         }
       },
@@ -1084,7 +1100,8 @@ export const MCP_PROMPTS = [
 1. Group files by character using folder/file names, game data tables, or the user. The app does not identify speakers.
 2. Per character pick 1-3 clips: 3-10 s, single speaker, clear, no music/SFX/heavy reverb, complete sentence, neutral emotion.
 3. Use the game's line text as transcript if available; otherwise create_voice recognizes it.
-4. create_voice {audioPath, name, transcript, lang}. Optionally test with a short synthesize and keep the best.
-5. Report created voices.`
+4. create_voice {audioPath, name, transcript, lang, folder}. Use folder to group by character/series, e.g. "游戏/赛马娘"; nested folders are created automatically.
+5. Optionally test with a short synthesize and keep the best.
+6. Report created voices and their folder paths.`
   }
 ]

@@ -6,6 +6,7 @@ import { cn } from '../lib/format'
 
 const META: Record<PageKey, { title: string; subtitle: string }> = {
   tts: { title: '语音合成', subtitle: '用几秒参考声音，生成自然的任意台词' },
+  voices: { title: '音色库', subtitle: '文件夹分类、拼音搜索与数百个音色的快速选择' },
   asr: { title: '语音转文字', subtitle: 'SenseVoice 本地快速识别，中 / 英 / 日 / 韩 / 粤' },
   audio: { title: '音频处理', subtitle: '人声 / 背景分离 · UVR MDX-Net，可选下载' },
   models: { title: '模型与显存', subtitle: '看清每一个引擎的状态，用完即释放' },

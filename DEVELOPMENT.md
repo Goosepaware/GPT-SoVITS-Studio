@@ -18,7 +18,7 @@
 - 采样步数改为 4 / 8 / 16 / 32 四档滑块。
 - 随机种子为 -1 时也会记录实际种子，结果卡和最近生成都支持“复用种子”；种子输入旁有随机按钮，一键设回 -1。
 - 语音转文字结果支持“发送到生成参考”，直接带回音频和文本。
-- 音色保存为单个 `.v5t` 文件（参考音频 + 文本 + 参考语言 + 时长），所有音色放在同一目录，可直接分享、导入，并可一键打开音色库目录。
+- 音色保存为单个 `.v5t` 文件（参考音频 + 文本 + 参考语言 + 时长），支持 `data/voices` 下真实多级文件夹分类、拖动移动、拼音搜索和最近使用。
 - 移除 Fun-ASR，只保留 SenseVoice，模型卡也不再显示。
 - 高级参数带 v5turbo 官方默认值，并支持一键恢复默认。
 - 生成结果可“放弃”或“放弃并重试”。
@@ -124,6 +124,9 @@ node scripts/test-mcp.mjs                                   # HTTP 协议 + 真�
 node scripts/test-mcp-stream.mjs                            # 协议协商 / SSE 进度 / 取消
 node scripts/test-stdio.mjs                                 # stdio 桥接（需手动开启 autoStart）
 node scripts/test-mcp-autostart.mjs                         # 自动启动默认关闭 + 并发只拉一个
+node scripts/test-voice-ui.mjs                              # 音色库文件夹 / 拼音 / 两级选择器（需 dev + CDP）
+& node_modules\\.bin\\esbuild.cmd scripts/test-voice-library.mjs --bundle --platform=node --format=esm --outfile=$env:TEMP\\voice-library-test.mjs
+node $env:TEMP\\voice-library-test.mjs                      # 真实子目录、移动、最近使用、拼音单元测试
 node scripts/test-mcp-p2.mjs                                # 分段编辑 / 说话人 / 混音（真实推理）
 & node_modules\\.bin\\esbuild.cmd scripts/test-segment-edit.mjs --bundle --platform=node --format=esm --outfile=$env:TEMP\\seg-test.mjs
 node $env:TEMP\\seg-test.mjs                                # 分段替换 / 撤销单元测试
@@ -303,13 +306,24 @@ release/installer/
 
 ## 音色库与分享
 
-所有音色都是 `data/voices` 下的单个 `.v5t` 文件，文件名就是保存时的音色名：
+所有音色都是 `data/voices` 下的单个 `.v5t` 文件，文件名就是音色 ID/保存名：
 
 ```text
 data/voices/
   smart_falcon.v5t
-  旁白 · 温柔女声.v5t
+  未分类音色.v5t
+  游戏/
+    赛马娘/
+      特别周_和气杏未.v5t
+    原神/
+      派蒙.v5t
 ```
+
+- 文件夹是真实磁盘子目录，支持任意层级；`Voice.folder` 使用 `/` 分隔的相对路径。
+- 移动音色只移动 `.v5t` 文件，文件名（ID）保持不变，因此历史记录和 MCP 引用不会失效。
+- 同一音色库内文件名保持全局唯一；重名导入会自动加 `（1）` 等后缀。
+- 文件夹只能删除空目录；非空时先把音色或子文件夹移走，避免误删。
+- `data/voice-library.json` 只保存最近使用时间，不保存分类关系。
 
 每个 `.v5t` 内含：
 
@@ -319,13 +333,17 @@ data/voices/
 - 参考语言
 - 音频时长
 
-播放时会把音频解到 `data/cache/voices` 作为缓存，缓存可随时删除，不影响 `.v5t` 文件。
+播放时才会把音频解到 `data/cache/voices`，列表只读取 `.v5t` 头部 JSON 元数据；因此数百个音色也能快速加载。缓存可随时删除，不影响 `.v5t` 文件。
 
-合成页「音色库」下方提供：
+「音色库」页面提供：
 
-- **打开音色库文件夹**：直接在资源管理器打开 `data/voices`。
-- **导入 .v5t**：选择一个或多个 `.v5t` 文件。
-- **导出 .v5t**：把当前音色另存为一份可分享的 `.v5t` 副本。
+- 新建/重命名/删除空文件夹，支持多级嵌套。
+- 搜索名称、全拼和拼音首字母；可在当前文件夹（含子文件夹）内搜索，也可切到全局。
+- 拖拽音色到文件夹，或批量移动/删除。
+- 编辑名称、参考文本和语言；试听、导出、作为参考声音使用。
+- `.v5t` 导入默认进入当前文件夹。
+
+合成页音色选择器分两级：一级只显示当前音色和最近使用的 6 个，二级才是带文件夹树和搜索的完整音色库。
 
 旧版本按文件夹保存的音色，会在首次启动时自动迁移成 `.v5t`，原 `voices.json` 会备份为 `data/voices-legacy-*.json`。
 

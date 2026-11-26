@@ -12,6 +12,7 @@ import { FirstRun } from './components/FirstRun'
 import { ModelsPage, type LogLine } from './pages/ModelsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { TtsPage } from './pages/TtsPage'
+import { VoiceLibraryPage } from './pages/VoiceLibraryPage'
 import { applyTheme, watchSystemTheme } from './lib/theme'
 
 const EMPTY_STATUS: Record<'tts' | 'asr', EngineStatus> = {
@@ -30,6 +31,7 @@ export default function App(): JSX.Element {
   const [logs, setLogs] = useState<LogLine[]>([])
   const [notices, setNotices] = useState<Notice[]>([])
   const [referenceTransfer, setReferenceTransfer] = useState<ReferenceTransfer | null>(null)
+  const [voiceTransfer, setVoiceTransfer] = useState<{ id: string; at: number } | null>(null)
   const [packsGateDismissed, setPacksGateDismissed] = useState(false)
   const logSeq = useRef(0)
 
@@ -182,7 +184,10 @@ export default function App(): JSX.Element {
           />
           <div className="content-scroll">
             <div className={page === 'tts' ? 'page-pane active' : 'page-pane'}>
-              <TtsPage bootstrap={bootstrap} engines={engines} onBootstrap={setBootstrap} notify={notify} incomingReference={referenceTransfer} />
+              <TtsPage bootstrap={bootstrap} engines={engines} onBootstrap={setBootstrap} notify={notify} incomingReference={referenceTransfer} voiceTransfer={voiceTransfer} onManageVoices={() => setPage('voices')} />
+            </div>
+            <div className={page === 'voices' ? 'page-pane active' : 'page-pane'}>
+              <VoiceLibraryPage notify={notify} onUseVoice={(id) => { setVoiceTransfer({ id, at: Date.now() }); setPage('tts') }} />
             </div>
             <div className={page === 'asr' ? 'page-pane active' : 'page-pane'}>
               <AsrPage bootstrap={bootstrap} engines={engines} notify={notify} onSendToReference={sendToReference} />

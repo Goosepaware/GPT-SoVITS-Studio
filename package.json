@@ -1,6 +1,6 @@
 {
   "name": "gpt-sovits-studio",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "GPT-SoVITS v5turbo desktop studio",
   "main": "./out/main/index.js",
   "author": "local",
@@ -18,6 +18,7 @@
   "dependencies": {
     "framer-motion": "^11.15.0",
     "lucide-react": "^0.468.0",
+    "pinyin-pro": "^3.29.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
