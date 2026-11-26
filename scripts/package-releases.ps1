@@ -1,10 +1,13 @@
-param(
+﻿param(
   [Parameter(Mandatory = $true)][string]$Source,
   [string]$Version = "1.1.1",
   [switch]$SkipSlim,
   [switch]$SkipFull,
   [switch]$UiOnly,
-  [int]$Level = 5
+  [int]$Level = 5,
+  # Extracted Umamusume voice-library release root (contains voices/ and NOTICE.md).
+  [string]$VoiceLibrary = "",
+  [string]$VoiceFolder = "赛马娘"
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +19,26 @@ $sampleVoice = Join-Path $project "..\GPT-SoVITS-Studio-Portable\data\voices\sma
 if (-not (Test-Path $sevenZip)) { throw "7za.exe not found: $sevenZip" }
 if (-not (Test-Path $sampleVoice)) { Write-Warning "sample voice not found, the package will have no example voice" }
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
+
+function Copy-UmamusumeVoices {
+  param([string]$Target)
+  if (-not $VoiceLibrary) {
+    throw "Full build requires -VoiceLibrary <extracted release root> (contains voices/ and NOTICE.md)."
+  }
+  $sourceVoices = Join-Path $VoiceLibrary "voices"
+  if (-not (Test-Path $sourceVoices)) { throw "Voice library not found: $sourceVoices" }
+  $voiceFiles = @(Get-ChildItem $sourceVoices -File -Filter "*.v5t")
+  if ($voiceFiles.Count -eq 0) { throw "No .v5t files in $sourceVoices" }
+  New-Item -ItemType Directory -Force -Path $Target | Out-Null
+  foreach ($file in $voiceFiles) {
+    Copy-Item $file.FullName (Join-Path $Target $file.Name) -Force
+  }
+  foreach ($name in @("README.md", "NOTICE.md", "VOICE_ASSETS_LICENSE.md", "LICENSE")) {
+    $src = Join-Path $VoiceLibrary $name
+    if (Test-Path $src) { Copy-Item $src (Join-Path $Target $name) -Force }
+  }
+  Write-Host ("  bundled {0} Umamusume voices -> {1}" -f $voiceFiles.Count, $Target)
+}
 
 function Build-Variant {
   param([string]$Name, [switch]$Slim, [switch]$NoEngine)
@@ -30,7 +53,14 @@ function Build-Variant {
   $built = Join-Path $release "GPT-SoVITS-Studio"
   $voices = Join-Path $built "data\voices"
   New-Item -ItemType Directory -Force -Path $voices | Out-Null
-  if (Test-Path $sampleVoice) { Copy-Item $sampleVoice (Join-Path $voices "smart_falcon.v5t") -Force }
+  if ($NoEngine) {
+    Write-Host "  UI build: no sample voices"
+  } elseif ($Slim) {
+    if (Test-Path $sampleVoice) { Copy-Item $sampleVoice (Join-Path $voices "smart_falcon.v5t") -Force }
+  } else {
+    $voiceTarget = if ($VoiceFolder) { Join-Path $voices $VoiceFolder } else { $voices }
+    Copy-UmamusumeVoices -Target $voiceTarget
+  }
 
   $target = Join-Path $release $Name
   if (Test-Path $target) { throw "already exists: $target" }
