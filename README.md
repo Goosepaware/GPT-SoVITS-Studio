@@ -7,13 +7,13 @@
 **把 GPT-SoVITS v5turbo、SenseVoice、说话人分离与人声分离装进一个开箱即用的桌面工作台——还能直接交给 AI Agent 驱动。**
 
 [![Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-111111?style=flat-square)](#)
-[![Release](https://img.shields.io/badge/Download-v1.0.0%20UI%20%C2%B7%2080MB-111111?style=flat-square)](https://github.com/Goosepaware/GPT-SoVITS-Studio/releases/latest)
+[![Release](https://img.shields.io/badge/Download-v1.1.1%20UI%20%C2%B7%2079MB-111111?style=flat-square)](https://github.com/Goosepaware/GPT-SoVITS-Studio/releases/latest)
 [![Engine](https://img.shields.io/badge/TTS-GPT--SoVITS%20v5turbo-111111?style=flat-square)](#)
 [![ASR](https://img.shields.io/badge/ASR-SenseVoiceSmall-111111?style=flat-square)](#)
 [![MCP](https://img.shields.io/badge/MCP-27%20Tools-111111?style=flat-square)](#)
 [![VRAM](https://img.shields.io/badge/GPU-8GB%20Friendly-111111?style=flat-square)](#)
 
-[核心能力](#核心能力) · [界面一览](#界面一览) · [快速上手](#快速上手) · [MCP：让 AI 自己干活](#mcp让-ai-自己干活) · [工作流](#典型工作流) · [显存与模型](#显存与模型)
+[核心能力](#核心能力) · [赛马娘音色库](#赛马娘音色库) · [界面一览](#界面一览) · [快速上手](#快速上手) · [MCP：让 AI 自己干活](#mcp让-ai-自己干活) · [工作流](#典型工作流) · [显存与模型](#显存与模型)
 
 </div>
 
@@ -44,6 +44,13 @@
 | **双语字幕烧录** | 中文大字在上、英文小字在下（也支持上下分栏或软字幕封装），长句自动切短，中英同步分段 |
 | **8 GB 显卡友好** | 实时显示显存占用；切换引擎自动卸载旧模型，空闲自动释放，托盘右键随时一键释放 |
 | **MCP 驱动** | 27 个本地 MCP 工具 + SSE 实时进度；一句话让 AI 自动完成整条视频译制或批量建音色库 |
+
+### 赛马娘音色库
+
+基于 [UMA Voice Archive](https://uma.0xcjy.top/) 素材整理的 **164 个赛马娘角色 `.v5t` 音色**。完整版已内置到 `data/voices/赛马娘`，打开客户端即可按角色浏览、拼音搜索、直接试听；UI 版不附带任何示例音色，保持空音色库。
+
+- 仓库与下载：<https://github.com/Goosepaware/umamusume-gpt-sovits-voice-library>
+- 非官方项目；音色素材仅用于非商业研究与学习，授权说明见仓库的 `NOTICE.md` 与 `VOICE_ASSETS_LICENSE.md`
 
 ---
 
@@ -81,7 +88,7 @@
   <tr>
     <td width="50%">
       <img src="assets/models-gate.png" alt="首次启动模型下载引导">
-      <div align="center"><sub><b>精简包首次启动引导</b> · 按需拉取大模型</sub></div>
+      <div align="center"><sub><b>UI 版首次启动引导</b> · 按需拉取大模型</sub></div>
     </td>
     <td width="50%">
       <img src="assets/segment-editor.png" alt="分段重生编辑器">
@@ -103,21 +110,28 @@
 - **安装版（`GPT-SoVITS-Studio-Setup.exe`）**：选择安装路径，自动创建桌面快捷方式；覆盖安装时保留 `data/` 里的音色和历史记录。
 - **绿色便携版**：解压即用，双击 `GPT-SoVITS-Studio.exe`。
 
-便携版按体积分成三种，功能完全一样，区别只是「首次启动要下载多少」：
+便携版分 **UI 版** 和 **完整版**，功能完全一样，区别是「首次启动要下载多少」以及是否内置赛马娘音色库：
 
-> **下载**：[Releases · v1.0.0](https://github.com/Goosepaware/GPT-SoVITS-Studio/releases/latest)（UI 版 80 MB）
+> **UI 版下载**：[GitHub Releases · v1.1.1](https://github.com/Goosepaware/GPT-SoVITS-Studio/releases/latest)（约 79 MB）
+>
+> **完整版网盘**：[夸克网盘](https://pan.quark.cn/s/eaa9d4db3f9f)（约 5.64 GB，解压即用）
 
-| 版本 | 压缩包 | 首次启动 | 适合谁 |
+| 版本 | 压缩包 | 内容 | 适合谁 |
 |---|---|---|---|
-| **UI 版** | 约 **80 MB** | 自动下载运行环境（约 2.5 GB）+ 模型（约 3 GB） | 想从零装、硬盘紧张 |
-| **精简版** | 约 2.6 GB | 只下载模型（约 3 GB） | 想少等一次下载 |
-| **完整版** | 约 5.6 GB | 开箱即用 | 不想再下载任何东西 |
+| **UI 版** | 约 **79 MB** | 首次启动自动下载运行环境（约 2.5 GB）+ 模型（约 3 GB）；无示例音色 | 想从零装、硬盘紧张 |
+| **完整版** | 约 **5.64 GB** | 内置全部运行环境、v5turbo / SenseVoice 模型，以及 164 个赛马娘音色 | 不想再下载任何东西 |
 
-**首次启动是全程自动的，不需要打开文件管理器复制任何东西**：
+<p align="center">
+  <img src="assets/quark-full-qr.png" width="220" alt="完整版夸克网盘二维码">
+</p>
+
+**UI 版首次启动是全程自动的，不需要打开文件管理器复制任何东西**：
 
 1. 打开应用 → 出现「准备运行环境」页，点「下载运行环境」（约 2.5 GB，Python + PyTorch cu128 + 推理代码）；
 2. 解压完成后界面自动切到「下载模型」，按需点下载（主模型、G2PW、SenseVoice 等）；
 3. 全部完成后直接进主界面，无需重启。
+
+完整版已包含以上全部内容，解压后双击 `GPT-SoVITS-Studio.exe` 即可使用。
 
 下载源可在「设置 → 下载源」里切换 **hf-mirror 镜像**（国内推荐）或 **HuggingFace 官方**，两者都支持断点续传与 `sha256` 校验。已经装过 GPT-SoVITS 整合包的话，在首启页点「选择已有整合包」直接指向它的目录即可。
 
